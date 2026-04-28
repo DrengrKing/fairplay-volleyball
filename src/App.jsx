@@ -327,6 +327,91 @@ function Empty({text="Nothing here yet."}) {
   );
 }
 
+// ── DatePick — native date picker that stores/shows as display string ─────────
+// Stores value as "YYYY-MM-DD" internally, displays as "Wed May 7"
+// The `value` prop coming in may be a display string or ISO string.
+function DatePick({ label, value, onChange }) {
+  // Convert a display string like "May 7" / "Mon May 5" to YYYY-MM-DD
+  const toISO = (str) => {
+    if (!str) return "";
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+    try {
+      const d = new Date(str + " 2025");
+      if (isNaN(d)) return "";
+      return d.toISOString().slice(0,10);
+    } catch(e) { return ""; }
+  };
+  // Convert YYYY-MM-DD to display "Wed, May 7"
+  const toDisplay = (iso) => {
+    if (!iso) return "";
+    try {
+      const d = new Date(iso + "T12:00:00");
+      return d.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"});
+    } catch(e) { return iso; }
+  };
+  const isoVal = toISO(value) || value;
+  const handleChange = (e) => {
+    const iso = e.target.value;
+    onChange(toDisplay(iso));  // store as readable display string
+  };
+  return (
+    <div style={{marginBottom:12}}>
+      {label && <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.8px",marginBottom:5}}>{label}</div>}
+      <input
+        type="date"
+        value={isoVal}
+        onChange={handleChange}
+        style={{width:"100%",padding:"9px 12px",borderRadius:R2,border:`1px solid ${C.border}`,
+          fontSize:13,color:C.text,background:C.bg,boxSizing:"border-box",outline:"none",
+          colorScheme:"dark"}}
+      />
+    </div>
+  );
+}
+
+// ── TeamPick — grouped select for choosing a team ─────────────────────────────
+function TeamPick({ label, value, onChange, teams, myTeamIds=[], allowAny=false }) {
+  const myTeams = myTeamIds.map(id => teams.find(t=>t.id===id)).filter(Boolean);
+  return (
+    <div style={{marginBottom:12}}>
+      {label && <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.8px",marginBottom:5}}>{label}</div>}
+      <select
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        style={{width:"100%",padding:"9px 12px",borderRadius:R2,border:`1px solid ${C.border}`,
+          fontSize:13,color:C.text,background:C.bg,boxSizing:"border-box",outline:"none",
+          appearance:"none",WebkitAppearance:"none"}}>
+        <option value="">Select a team…</option>
+        {allowAny && <option value="Any team">Any team</option>}
+        {myTeams.length > 0 && (
+          <optgroup label="My Teams">
+            {myTeams.map(t => (
+              <option key={t.id} value={`${t.name} (#${t.id})`}>
+                #{t.id} {t.name}
+              </option>
+            ))}
+          </optgroup>
+        )}
+        {DIVS.map(div => {
+          const ts = teams.filter(t => t.div === div && !myTeamIds.includes(t.id));
+          if (ts.length === 0) return null;
+          return (
+            <optgroup key={div} label={div}>
+              {ts.map(t => (
+                <option key={t.id} value={`${t.name} (#${t.id})`}>
+                  #{t.id} {t.name}
+                </option>
+              ))}
+            </optgroup>
+          );
+        })}
+      </select>
+    </div>
+  );
+}
+
+
+
 
 function GameCard({game,teams,compact=false,refMode=false,editId,setEditId,updateGame,myTeamIds=[]}) {
   const home = tById(teams, game.home);
@@ -406,8 +491,7 @@ function GameCard({game,teams,compact=false,refMode=false,editId,setEditId,updat
           <div style={{background:C.bg,borderRadius:8,padding:"10px 12px",marginBottom:10}}>
             <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",marginBottom:10}}>Details</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-              <TF label="Day"   value={day}   onChange={setDay}/>
-              <TF label="Date"  value={date}  onChange={setDate}/>
+              <DatePick label="Date" value={date} onChange={v=>{ setDate(v); const d=new Date(v+" 2025"); if(!isNaN(d)) setDay(d.toLocaleDateString("en-US",{weekday:"short"})); }}/>
               <TF label="Time"  value={time}  onChange={setTime}/>
               <TF label="Court" value={court} onChange={setCourt}/>
             </div>
@@ -1657,7 +1741,7 @@ function AdminAnnouncements({ back, info, setInfo }) {
         <TF label="Title"  value={form.title} onChange={v=>setForm(p=>({...p,title:v}))} placeholder="Announcement title"/>
         <TA label="Body"   value={form.body}  onChange={v=>setForm(p=>({...p,body:v}))}  rows={4}/>
         <TF label="Tag"    value={form.tag}   onChange={v=>setForm(p=>({...p,tag:v}))}   placeholder="League, Facility, Tournament…"/>
-        <TF label="Date"   value={form.date}  onChange={v=>setForm(p=>({...p,date:v}))}  placeholder="Apr 28"/>
+        <DatePick label="Date" value={form.date} onChange={v=>setForm(p=>({...p,date:v}))}/>
         <SaveCancel label="Save" onCancel={()=>{setEditId(null);setAdding(false);setForm(blank);}} onSave={save}/>
       </div>
     );
@@ -1785,8 +1869,7 @@ function AdminSchedule({ back, games, setGames, teams }) {
       <div style={{paddingBottom:28}}>
         <button onClick={()=>setSelId(null)} style={{background:"none",border:"none",color:C.gold,fontSize:13,fontWeight:600,cursor:"pointer",padding:"0 0 16px",display:"block"}}>← Back</button>
         <div style={{fontSize:13,fontWeight:600,color:C.text,marginBottom:16}}>{home?.name} vs {away?.name}</div>
-        <TF label="Day"   value={day}   onChange={setDay}   placeholder="Mon"/>
-        <TF label="Date"  value={date}  onChange={setDate}  placeholder="May 5"/>
+        <DatePick label="Date" value={date} onChange={v=>{ setDate(v); const d=new Date(v+" 2025"); if(!isNaN(d)) setDay(d.toLocaleDateString("en-US",{weekday:"short"})); }}/>
         <TF label="Time"  value={time}  onChange={setTime}  placeholder="6:00 PM"/>
         <TF label="Court" value={court} onChange={setCourt} placeholder="River City — Court 1"/>
         <div style={{marginBottom:14}}>
@@ -2576,7 +2659,7 @@ function SubsBoard({ profile, teams }) {
   const [divFilter, setDivFilter] = useState("All");
   const [showForm,  setShowForm]  = useState(false);
   const [formType,  setFormType]  = useState("needed");
-  const [form,      setForm]      = useState({ name:"", teamNote:"", div:"", date:"", position:"", note:"" });
+  const [form,      setForm]      = useState({ name:"", teamNote:"", div:"", date:"", time:"", position:"", note:"" });
   const [formErr,   setFormErr]   = useState("");
 
   const savePosts = (updated) => {
@@ -2588,7 +2671,7 @@ function SubsBoard({ profile, teams }) {
     setFormType(type);
     const _ids = profile?.teamIds || (profile?.teamId ? [profile.teamId] : []);
     const _div = _ids.length > 0 ? (teams.find(t=>t.id===_ids[0])?.div||"") : "";
-    setForm({ name: profile?.name || "", teamNote:"", div: _div, date:"", position:"", note:"" });
+    setForm({ name: profile?.name || "", teamNote:"", div: _div, date:"", time:"", position:"", note:"" });
     setFormErr("");
     setShowForm(true);
   };
@@ -2596,16 +2679,17 @@ function SubsBoard({ profile, teams }) {
   const handlePost = () => {
     if (!form.name.trim()) { setFormErr("Name is required."); return; }
     if (!form.date.trim()) { setFormErr("Date is required."); return; }
+    const displayDate = form.time ? `${form.date} · ${form.time}` : form.date;
     const post = {
       id:        Date.now(),
       type:      formType,
       name:      form.name.trim(),
       teamNote:  form.teamNote.trim(),
       div:       form.div || "Any",
-      date:      form.date.trim(),
+      date:      displayDate,
       position:  form.position.trim(),
       note:      form.note.trim(),
-      status:    "open",   // "open" | "filled"
+      status:    "open",
       ts:        new Date().toLocaleDateString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}),
       ownerId:   form.name.trim().toLowerCase(),
     };
@@ -2646,7 +2730,17 @@ function SubsBoard({ profile, teams }) {
         </div>
 
         <TF label="Your Name *" value={form.name} onChange={v=>setForm(p=>({...p,name:v}))} placeholder="First name or nickname"/>
-        <TF label={formType==="needed"?"Your Team (optional)":"Available for (optional)"} value={form.teamNote} onChange={v=>setForm(p=>({...p,teamNote:v}))} placeholder="e.g. Team #51 or any team"/>
+        {formType==="needed"
+          ? <TeamPick
+              label="Your Team (optional)"
+              value={form.teamNote}
+              onChange={v=>setForm(p=>({...p,teamNote:v}))}
+              teams={teams}
+              myTeamIds={profile?.teamIds || (profile?.teamId ? [profile.teamId] : [])}
+              allowAny={false}
+            />
+          : <TF label="Available for (optional)" value={form.teamNote} onChange={v=>setForm(p=>({...p,teamNote:v}))} placeholder="Any team, specific division, etc."/>
+        }
         <div style={{marginBottom:10}}>
           <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:6}}>Division</div>
           <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
@@ -2659,7 +2753,8 @@ function SubsBoard({ profile, teams }) {
             ))}
           </div>
         </div>
-        <TF label={formType==="needed"?"Date / Time Needed *":"Date(s) Available *"} value={form.date} onChange={v=>setForm(p=>({...p,date:v}))} placeholder="e.g. Wednesday May 7, 7:30 PM"/>
+        <DatePick label={formType==="needed"?"Date Needed *":"Date(s) Available *"} value={form.date} onChange={v=>setForm(p=>({...p,date:v}))}/>
+        <TF label="Time (optional)" value={form.time||""} onChange={v=>setForm(p=>({...p,time:v}))} placeholder="e.g. 7:30 PM"/>
         <TF label="Position (optional)" value={form.position} onChange={v=>setForm(p=>({...p,position:v}))} placeholder="e.g. Setter, Any, Female only"/>
         <TA label="Short Note (optional)" value={form.note} onChange={v=>setForm(p=>({...p,note:v}))} rows={2}/>
         {formErr && <div style={{fontSize:12,color:C.red,marginBottom:10}}>⚠ {formErr}</div>}
