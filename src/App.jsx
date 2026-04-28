@@ -424,7 +424,12 @@ function GameCard({game,teams,compact=false,refMode=false,editId,setEditId,updat
   const [date,  setDate]   = useState(game.date);
   const [day,   setDay]    = useState(game.day);
 
-  if (!home || !away) return null;
+  if (!home && !away) return null;
+  // Fallback names for deleted teams
+  const homeName = home?.name || `Deleted Team #${game.home}`;
+  const awayName = away?.name || `Deleted Team #${game.away}`;
+  const homeTeam = home || {id:game.home, name:homeName, color:C.light, roster:[]};
+  const awayTeam = away || {id:game.away, name:awayName, color:C.light, roster:[]};
   const scored   = game.status === "Live" || game.status === "Final";
   const editing  = refMode && editId === game.id;
   const isMyGame = myTeamIds.length > 0 && (myTeamIds.includes(game.home) || myTeamIds.includes(game.away));
@@ -447,8 +452,8 @@ function GameCard({game,teams,compact=false,refMode=false,editId,setEditId,updat
       </div>
       <div style={{display:"flex",alignItems:"center"}}>
         <div style={{display:"flex",alignItems:"center",gap:8,flex:1,minWidth:0}}>
-          <Avatar team={home} size={30}/>
-          <span style={{fontSize:13,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{home.name}</span>
+          <Avatar team={homeTeam} size={30}/>
+          <span style={{fontSize:13,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{homeName}</span>
         </div>
         {scored
           ? <div style={{padding:"3px 12px",background:C.bg,borderRadius:8,flexShrink:0,fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.text,display:"flex",gap:8,alignItems:"center"}}>
@@ -457,14 +462,14 @@ function GameCard({game,teams,compact=false,refMode=false,editId,setEditId,updat
           : <div style={{padding:"3px 12px",background:C.bg,borderRadius:8,fontSize:11,fontWeight:600,color:C.muted,flexShrink:0}}>VS</div>
         }
         <div style={{display:"flex",alignItems:"center",gap:8,flex:1,justifyContent:"flex-end",minWidth:0}}>
-          <span style={{fontSize:13,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textAlign:"right"}}>{away.name}</span>
-          <Avatar team={away} size={30}/>
+          <span style={{fontSize:13,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textAlign:"right"}}>{awayName}</span>
+          <Avatar team={awayTeam} size={30}/>
         </div>
       </div>
       {!compact && (
         <div style={{marginTop:9,paddingTop:9,borderTop:`1px solid ${C.border}`,fontSize:11,color:C.muted,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <span>📍 {game.court}</span>
-          <DivPill div={home.div}/>
+          <DivPill div={homeTeam.div}/>
         </div>
       )}
       {editing && (
@@ -1820,6 +1825,27 @@ function AdminScreen({ games, setGames, teams, setTeams, info, setInfo, bracket,
   return null;
 }
 
+// ── Shared confirm-delete inline component ────────────────────────────────────
+function DelBtn({ onConfirm, label="Delete" }) {
+  const [confirming, setConfirming] = useState(false);
+  if (confirming) return (
+    <div style={{display:"flex",alignItems:"center",gap:6}}>
+      <span style={{fontSize:11,color:C.red}}>Sure?</span>
+      <button onClick={()=>{ onConfirm(); setConfirming(false); }}
+        style={{padding:"2px 8px",borderRadius:5,border:"none",background:C.red,color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Yes</button>
+      <button onClick={()=>setConfirming(false)}
+        style={{padding:"2px 8px",borderRadius:5,border:`1px solid ${C.border}`,background:"none",color:C.muted,fontSize:11,cursor:"pointer"}}>No</button>
+    </div>
+  );
+  return (
+    <button onClick={()=>setConfirming(true)}
+      style={{padding:"2px 9px",borderRadius:6,border:`1px solid ${C.red}40`,background:"none",
+        color:C.red,fontSize:11,cursor:"pointer",whiteSpace:"nowrap"}}>
+      🗑 {label}
+    </button>
+  );
+}
+
 // ── Admin: Announcements ──────────────────────────────────────────────────────
 function AdminAnnouncements({ back, info, setInfo }) {
   const [editId, setEditId] = useState(null);
@@ -1872,7 +1898,7 @@ function AdminAnnouncements({ back, info, setInfo }) {
             <span style={{fontSize:13,fontWeight:600,color:C.text,flex:1,lineHeight:1.3}}>{a.title}</span>
             <div style={{display:"flex",gap:6,flexShrink:0}}>
               <button onClick={()=>openEdit(a)} style={{padding:"2px 9px",borderRadius:6,border:`1px solid ${C.border}`,background:"none",color:C.muted,fontSize:11,cursor:"pointer"}}>Edit</button>
-              <button onClick={()=>del(a.id)} style={{padding:"2px 9px",borderRadius:6,border:`1px solid #f8717140`,background:"none",color:"#f87171",fontSize:11,cursor:"pointer"}}>Del</button>
+              <DelBtn onConfirm={()=>del(a.id)}/>
             </div>
           </div>
           <div style={{fontSize:11,color:C.muted}}>{a.tag} · {a.date}</div>
@@ -1974,6 +2000,20 @@ function AdminSchedule({ back, games, setGames, teams }) {
     setSelId(null);
   };
 
+  const delGame = (id) => {
+    const updated = games.filter(g => g.id !== id);
+    setGames(updated);
+    storageSet("fp_games", JSON.stringify(updated));
+  };
+
+  const delFinal = () => {
+    const updated = games.filter(g => g.status !== "Final");
+    setGames(updated);
+    storageSet("fp_games", JSON.stringify(updated));
+  };
+
+  const finalCount = games.filter(g => g.status === "Final").length;
+
   if (sel) {
     const home = tById(teams, sel.home);
     const away = tById(teams, sel.away);
@@ -2000,19 +2040,24 @@ function AdminSchedule({ back, games, setGames, teams }) {
   return (
     <div style={{paddingBottom:28}}>
       {back}
-      <div style={{fontSize:13,fontWeight:600,color:C.text,marginBottom:14}}>Select a Game</div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+        <span style={{fontSize:13,fontWeight:600,color:C.text}}>Schedule ({games.length} games)</span>
+        {finalCount > 0 && <DelBtn label={`Clear ${finalCount} Finals`} onConfirm={delFinal}/>}
+      </div>
       {games.map(g=>{
         const home=tById(teams,g.home); const away=tById(teams,g.away);
-        if(!home||!away) return null;
+        const homeName = home?.name || `#${g.home}`;
+        const awayName = away?.name || `#${g.away}`;
         return (
-          <button key={g.id} onClick={()=>{setSelId(g.id);setDay(g.day);setDate(g.date);setTime(g.time);setCourt(g.court);setStat(g.status);}}
-            style={{width:"100%",background:C.surf,border:`1px solid ${C.border}`,borderRadius:12,padding:"11px 14px",marginBottom:7,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",textAlign:"left"}}>
-            <div style={{minWidth:0}}>
-              <div style={{fontSize:13,fontWeight:500,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{home.name} vs {away.name}</div>
-              <div style={{fontSize:11,color:C.muted,marginTop:2}}>{g.day} {g.date} · {g.time} · {g.court}</div>
-            </div>
-            <span style={{flexShrink:0,marginLeft:8}}><StatusBadge status={g.status}/></span>
-          </button>
+          <div key={g.id} style={{background:C.surf,border:`1px solid ${C.border}`,borderRadius:12,padding:"11px 14px",marginBottom:7,display:"flex",alignItems:"center",gap:8}}>
+            <button onClick={()=>{setSelId(g.id);setDay(g.day);setDate(g.date);setTime(g.time);setCourt(g.court);setStat(g.status);}}
+              style={{flex:1,background:"none",border:"none",cursor:"pointer",textAlign:"left",padding:0,minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:500,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{homeName} vs {awayName}</div>
+              <div style={{fontSize:11,color:C.muted,marginTop:2}}>{g.day} {g.date} · {g.time}</div>
+            </button>
+            <StatusBadge status={g.status}/>
+            <DelBtn onConfirm={()=>delGame(g.id)}/>
+          </div>
         );
       })}
     </div>
@@ -2035,6 +2080,13 @@ function AdminTeams({ back, teams, setTeams }) {
     setSelId(null);
   };
 
+  const delTeam = (id) => {
+    const updated = teams.filter(t => t.id !== id);
+    setTeams(updated);
+    storageSet("fp_teams", JSON.stringify(updated));
+    if (selId === id) setSelId(null);
+  };
+
   const addPlayer = () => {
     if (!np.trim() || !selId) return;
     const updated = teams.map(t => t.id===selId ? {...t,roster:[...t.roster,np.trim()]} : t);
@@ -2053,7 +2105,10 @@ function AdminTeams({ back, teams, setTeams }) {
     return (
       <div style={{paddingBottom:28}}>
         <button onClick={()=>setSelId(null)} style={{background:"none",border:"none",color:C.gold,fontSize:13,fontWeight:600,cursor:"pointer",padding:"0 0 16px",display:"block"}}>← Back</button>
-        <div style={{fontSize:13,fontWeight:600,color:C.text,marginBottom:16}}>#{sel.id} · {sel.name}</div>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+          <div style={{fontSize:13,fontWeight:600,color:C.text}}>#{sel.id} · {sel.name}</div>
+          <DelBtn label="Delete Team" onConfirm={()=>delTeam(sel.id)}/>
+        </div>
         <TF label="Team Name" value={name}  onChange={setName} placeholder={sel.name}/>
         <TF label="Captain"   value={cap}   onChange={setCap}  placeholder={sel.captain}/>
         <div style={{marginBottom:14}}>
@@ -2091,15 +2146,18 @@ function AdminTeams({ back, teams, setTeams }) {
         <div key={div} style={{marginBottom:16}}>
           <div style={{fontSize:10,fontWeight:700,color:DIVC[div],textTransform:"uppercase",letterSpacing:"1px",marginBottom:8}}>{div}</div>
           {teams.filter(t=>t.div===div).map(t=>(
-            <button key={t.id} onClick={()=>{setSelId(t.id);setName(t.name);setCap(t.captain);setDiv(t.div);}}
-              style={{width:"100%",background:C.surf,border:`1px solid ${C.border}`,borderRadius:12,padding:"11px 14px",marginBottom:6,cursor:"pointer",display:"flex",alignItems:"center",gap:12,textAlign:"left"}}>
-              <Avatar team={t} size={32}/>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:13,fontWeight:500,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</div>
-                <div style={{fontSize:11,color:C.muted}}>#{t.id} · {t.roster.length} players</div>
-              </div>
-              <span style={{color:C.light,fontSize:18}}>›</span>
-            </button>
+            <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+              <button onClick={()=>{setSelId(t.id);setName(t.name);setCap(t.captain);setDiv(t.div);}}
+                style={{flex:1,background:C.surf,border:`1px solid ${C.border}`,borderRadius:12,padding:"11px 14px",cursor:"pointer",display:"flex",alignItems:"center",gap:12,textAlign:"left"}}>
+                <Avatar team={t} size={32}/>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,fontWeight:500,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</div>
+                  <div style={{fontSize:11,color:C.muted}}>#{t.id} · {t.roster.length} players</div>
+                </div>
+                <span style={{color:C.light,fontSize:18}}>›</span>
+              </button>
+              <DelBtn onConfirm={()=>delTeam(t.id)}/>
+            </div>
           ))}
         </div>
       ))}
@@ -2123,47 +2181,182 @@ function AdminBracket({ back, teams }) {
 // ── Admin: Bulk Import Schedule ───────────────────────────────────────────────
 function AdminBulkImport({ back, teams, games, setGames }) {
   const [raw,      setRaw]      = useState("");
-  const [preview,  setPreview]  = useState(null);  // null | array of {game, error}
+  const [preview,  setPreview]  = useState(null);
   const [imported, setImported] = useState(false);
 
-  const DAY_MAP = {
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  const DAY_FROM_DATE = (dateStr) => {
+    try {
+      const d = new Date(dateStr + ", 2025");
+      if (isNaN(d)) return null;
+      return d.toLocaleDateString("en-US",{weekday:"short"}); // "Mon"
+    } catch(e) { return null; }
+  };
+
+  const DAY_ABBR = {
     sunday:"Sun",monday:"Mon",tuesday:"Tue",wednesday:"Wed",thursday:"Thu",friday:"Fri",saturday:"Sat",
     sun:"Sun",mon:"Mon",tue:"Tue",wed:"Wed",thu:"Thu",fri:"Fri",sat:"Sat",
   };
 
-  const parseLine = (line, idx) => {
+  const normalizeDay = (str) => DAY_ABBR[str.toLowerCase()] || str.slice(0,3);
+
+  const normalizeTime = (str) => {
+    if (!str) return "";
+    str = str.trim();
+    // Already in "6:00 PM" format
+    if (/^\d{1,2}:\d{2}\s*(AM|PM)$/i.test(str)) return str.replace(/am/i,"AM").replace(/pm/i,"PM");
+    // "6pm" or "6:00pm"
+    const m = str.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i);
+    if (m) return `${m[1]}:${m[2]||"00"} ${m[3].toUpperCase()}`;
+    // 24h "18:00"
+    const h24 = str.match(/^(\d{1,2}):(\d{2})$/);
+    if (h24) {
+      const h = parseInt(h24[1]), mn = h24[2];
+      const h12 = h>12?h-12:h===0?12:h, ampm = h>=12?"PM":"AM";
+      return `${h12}:${mn} ${ampm}`;
+    }
+    return str;
+  };
+
+  // Match team by number or name (fuzzy)
+  const resolveTeam = (raw) => {
+    raw = raw.trim();
+    // By number: "#51", "Team #51", "Team51", "51"
+    const numM = raw.match(/#?(\d{2,3})\b/);
+    if (numM) {
+      const id = parseInt(numM[1]);
+      const found = teams.find(t => t.id === id);
+      if (found) return {team:found, warn:null};
+      return {team:null, warn:`Team #${id} not found`};
+    }
+    // By name — strip "Team", "team" prefix
+    const cleaned = raw.replace(/^team\s*/i,"").toLowerCase().trim();
+    if (!cleaned) return {team:null, warn:`Couldn't read team: "${raw}"`};
+    // Exact match
+    let found = teams.find(t => t.name.toLowerCase() === cleaned);
+    if (!found) {
+      // Partial / starts-with match
+      found = teams.find(t => t.name.toLowerCase().startsWith(cleaned) || cleaned.startsWith(t.name.toLowerCase().slice(0,5)));
+    }
+    if (!found) {
+      // Word overlap
+      const words = cleaned.split(/\s+/);
+      found = teams.find(t => words.some(w => w.length > 3 && t.name.toLowerCase().includes(w)));
+    }
+    if (found) return {team:found, warn:null};
+    return {team:null, warn:`Team not found: "${raw}"`};
+  };
+
+  // Extract date string like "May 6" or "May 6, 2025" from a token
+  const extractDate = (str) => {
+    const m = str.match(/([A-Za-z]+\.?\s+\d{1,2}(?:,?\s*\d{4})?)/);
+    return m ? m[1].replace(/,?\s*\d{4}/,"").trim() : null;
+  };
+
+  // Detect if a token looks like a date
+  const isDate = (s) => /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(s);
+  const isDay  = (s) => /^(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(s.trim());
+  const isTime = (s) => /\d{1,2}(:\d{2})?\s*(am|pm)/i.test(s) || /^\d{1,2}:\d{2}$/.test(s.trim());
+  const isCourt= (s) => /court|river|empowered|seminary|electric/i.test(s);
+  const isTeam = (s) => /#\d+|^team\s*#?\d+|\bvs\b|vs\./i.test(s) || teams.some(t => {
+    const words = t.name.toLowerCase().split(/\s+/).filter(w=>w.length>3);
+    return words.some(w => s.toLowerCase().includes(w));
+  });
+
+  // Parse a single line into a game object
+  const parseLine = (line, lineIdx) => {
     const raw = line.trim();
-    if (!raw) return null;
-    const parts = raw.split("|").map(p => p.trim());
-    if (parts.length < 5) return { error: `Line ${idx+1}: needs 5 fields separated by |`, raw };
+    if (!raw || raw.startsWith("#") || raw.startsWith("//")) return null;
 
-    const [datePart, time, court, homeRaw, awayRaw] = parts;
-
-    // Parse date — "Monday, May 6" or "Mon May 6"
-    const dateMatch = datePart.match(/^([A-Za-z]+)[,\s]+([A-Za-z]+\s+\d+)$/);
-    if (!dateMatch) return { error: `Line ${idx+1}: can't parse date "${datePart}"`, raw };
-    const dayWord = dateMatch[1].toLowerCase();
-    const day     = DAY_MAP[dayWord] || dateMatch[1].slice(0,3);
-    const date    = dateMatch[2].trim();
-
-    // Parse team numbers — "Team #51" or "#51" or "51"
-    const numOf = str => { const m = str.match(/#?(\d+)/); return m ? parseInt(m[1]) : null; };
-    const homeId = numOf(homeRaw);
-    const awayId = numOf(awayRaw);
-
-    if (!homeId || !awayId) return { error: `Line ${idx+1}: can't read team numbers from "${homeRaw}" / "${awayRaw}"`, raw };
-
-    const homeTeam = tById(teams, homeId);
-    const awayTeam = tById(teams, awayId);
     const warnings = [];
-    if (!homeTeam) warnings.push(`Team #${homeId} not found`);
-    if (!awayTeam) warnings.push(`Team #${awayId} not found`);
+    let day="", date="", time="", court="", homeRaw="", awayRaw="";
+
+    // Split by common separators: |  ,  -  (but not inside team names)
+    // Prefer | first, fall back to comma/dash
+    let parts;
+    if (raw.includes("|")) {
+      parts = raw.split("|").map(p=>p.trim()).filter(Boolean);
+    } else if (raw.includes(" - ")) {
+      parts = raw.split(" - ").map(p=>p.trim()).filter(Boolean);
+    } else {
+      parts = raw.split(/,(?![^(]*\))/).map(p=>p.trim()).filter(Boolean);
+    }
+
+    // Handle "X vs Y" token — always split this out
+    const vsIdx = parts.findIndex(p => /\bvs\.?\b/i.test(p));
+    if (vsIdx >= 0) {
+      const vsParts = parts[vsIdx].split(/\bvs\.?\b/i).map(p=>p.trim());
+      if (vsParts.length === 2) {
+        homeRaw = vsParts[0];
+        awayRaw = vsParts[1];
+        parts = [...parts.slice(0,vsIdx), ...parts.slice(vsIdx+1)];
+      }
+    }
+
+    // If no vs found, look for two consecutive team tokens
+    let teamParts = [];
+    if (!homeRaw) {
+      parts.forEach((p,i) => {
+        if (isTeam(p) && !isDate(p) && !isTime(p) && !isCourt(p)) teamParts.push({p,i});
+      });
+      if (teamParts.length >= 2) {
+        homeRaw = teamParts[0].p;
+        awayRaw = teamParts[1].p;
+        const usedIdxs = new Set([teamParts[0].i, teamParts[1].i]);
+        parts = parts.filter((_,i) => !usedIdxs.has(i));
+      } else if (teamParts.length === 1) {
+        homeRaw = teamParts[0].p;
+        parts = parts.filter((_,i) => i !== teamParts[0].i);
+        warnings.push(`Line ${lineIdx+1}: only one team found`);
+      }
+    } else {
+      // Remove vs-containing part from parts list (already extracted)
+    }
+
+    // Now classify remaining parts
+    parts.forEach(p => {
+      if (!time  && isTime(p))  { time = normalizeTime(p); return; }
+      if (!date  && isDate(p))  { const d = extractDate(p); if(d){date=d;} return; }
+      if (       isDay(p))     { day = normalizeDay(p); return; }
+      if (!court && isCourt(p)){ court = p; return; }
+      // Anything leftover that looks like a date
+      if (!date && /\d/.test(p) && extractDate(p)) { date = extractDate(p)||p; }
+    });
+
+    // Auto-derive day from date if missing
+    if (date && !day) {
+      const derived = DAY_FROM_DATE(date);
+      if (derived) day = derived;
+    }
+
+    // Defaults
+    if (!court) { court = "TBD"; warnings.push(`Line ${lineIdx+1}: no court found — set to TBD`); }
+    if (!time)  { time  = "";    warnings.push(`Line ${lineIdx+1}: no time found`); }
+
+    // Resolve teams
+    if (!homeRaw && !awayRaw) {
+      return {error:`Line ${lineIdx+1}: no teams found`, raw};
+    }
+    const h = resolveTeam(homeRaw);
+    const a = resolveTeam(awayRaw || "");
+    if (h.warn) warnings.push(`Line ${lineIdx+1}: ${h.warn}`);
+    if (a.warn) warnings.push(`Line ${lineIdx+1}: ${a.warn}`);
+    if (!h.team && !a.team) return {error:`Line ${lineIdx+1}: couldn't identify any teams`, raw};
+
+    // Duplicate check
+    const homeId = h.team?.id ?? null;
+    const awayId = a.team?.id ?? null;
+    const isDuplicate = homeId && awayId && games.some(g =>
+      ((g.home===homeId&&g.away===awayId)||(g.home===awayId&&g.away===homeId)) &&
+      g.date===date && g.time===time
+    );
+    if (isDuplicate) warnings.push(`Line ${lineIdx+1}: possible duplicate (same teams/date/time)`);
 
     const game = {
-      id:     Date.now() + idx,
-      day,
-      date,
-      time:   time || "TBD",
+      id:     Date.now() + lineIdx,
+      day:    day   || "",
+      date:   date  || "",
+      time:   time  || "",
       court:  court || "TBD",
       home:   homeId,
       away:   awayId,
@@ -2172,12 +2365,12 @@ function AdminBulkImport({ back, teams, games, setGames }) {
       as_:    null,
     };
 
-    return { game, warnings, raw };
+    return {game, warnings, raw, isDuplicate, homeTeam:h.team, awayTeam:a.team};
   };
 
   const handlePreview = () => {
-    const lines   = raw.split("\n").filter(l => l.trim());
-    const results = lines.map((line, i) => parseLine(line, i)).filter(Boolean);
+    const lines = raw.split("\n").filter(l => l.trim());
+    const results = lines.map((line,i) => parseLine(line,i)).filter(Boolean);
     setPreview(results);
     setImported(false);
   };
@@ -2185,92 +2378,91 @@ function AdminBulkImport({ back, teams, games, setGames }) {
   const handleImport = () => {
     if (!preview) return;
     const newGames = preview.filter(r => r.game).map(r => r.game);
-    if (newGames.length === 0) return;
+    if (!newGames.length) return;
     const updated = [...games, ...newGames];
     setGames(updated);
     storageSet("fp_games", JSON.stringify(updated));
     setImported(true);
   };
 
-  const validCount   = preview ? preview.filter(r => r.game).length  : 0;
-  const errorCount   = preview ? preview.filter(r => r.error).length : 0;
+  const validCount   = preview ? preview.filter(r => r.game).length   : 0;
   const warnCount    = preview ? preview.filter(r => r.game && r.warnings?.length).length : 0;
+  const errorCount   = preview ? preview.filter(r => r.error).length  : 0;
+  const dupCount     = preview ? preview.filter(r => r.isDuplicate).length : 0;
 
   return (
     <div style={{paddingBottom:28}}>
       {back}
       <div style={{fontSize:13,fontWeight:600,color:C.text,marginBottom:4}}>Bulk Import Schedule</div>
-      <div style={{fontSize:11,color:C.muted,marginBottom:14,lineHeight:1.6}}>
-        Paste one game per line in this format:
+      <div style={{fontSize:11,color:C.muted,marginBottom:12,lineHeight:1.6}}>
+        Paste games one per line. Multiple formats supported — date, time, court, and teams in any order.
       </div>
 
-      {/* Format example */}
-      <div style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px",marginBottom:14,fontFamily:"monospace",fontSize:10,color:C.muted,lineHeight:1.8,userSelect:"all"}}>
-        Monday, May 6 | 6:00 PM | Court 1 | Team #51 | Team #52{"\n"}
-        Monday, May 6 | 7:00 PM | Court 2 | Team #53 | Team #54{"\n"}
-        Tuesday, May 7 | 6:00 PM | Court 1 | Team #61 | Team #62
+      {/* Format examples */}
+      <div style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:R2,padding:"10px 12px",marginBottom:14,fontFamily:"monospace",fontSize:10,color:C.muted,lineHeight:2,userSelect:"all"}}>
+        {"Monday, May 6 | 6:00 PM | Court 1 | Team #51 | Team #52\n"}
+        {"May 6, 6:00 PM, Court 1, #51 vs #52\n"}
+        {"Mon May 6 - 7:30 PM - River City Court 2 - Stranger Swings vs Power Rage-ers\n"}
+        {"Team #61 vs Team #62 | Tuesday May 7 | 8:00 PM | Court 3"}
       </div>
 
       {/* Textarea */}
       <textarea
         value={raw}
         onChange={e=>{setRaw(e.target.value);setPreview(null);setImported(false);}}
-        placeholder={"Monday, May 6 | 6:00 PM | Court 1 | Team #51 | Team #52\nMonday, May 6 | 7:00 PM | Court 2 | Team #53 | Team #54"}
+        placeholder={"Monday, May 6 | 6:00 PM | Court 1 | Team #51 | Team #52"}
         rows={8}
-        style={{width:"100%",padding:"10px 12px",borderRadius:10,border:`1px solid ${C.border}`,fontSize:12,
+        style={{width:"100%",padding:"10px 12px",borderRadius:R2,border:`1px solid ${C.border}`,fontSize:12,
           color:C.text,background:C.surf,boxSizing:"border-box",outline:"none",resize:"vertical",
           fontFamily:"monospace",lineHeight:1.7,marginBottom:10}}
       />
 
-      {/* Preview button */}
       <button onClick={handlePreview} disabled={!raw.trim()}
-        style={{width:"100%",padding:"11px",borderRadius:10,border:`1px solid ${C.border}`,background:C.surf,
+        style={{width:"100%",padding:"11px",borderRadius:R2,border:`1px solid ${C.border}`,background:C.surf,
           color:raw.trim()?C.text:C.muted,fontSize:13,fontWeight:600,cursor:raw.trim()?"pointer":"default",marginBottom:14}}>
         Preview
       </button>
 
-      {/* Preview results */}
+      {/* Preview */}
       {preview && (
         <div>
-          {/* Summary */}
-          <div style={{display:"flex",gap:10,marginBottom:12,flexWrap:"wrap"}}>
+          <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
             <span style={{fontSize:11,fontWeight:600,color:C.green,background:`${C.green}14`,padding:"3px 10px",borderRadius:20}}>{validCount} valid</span>
-            {warnCount>0 && <span style={{fontSize:11,fontWeight:600,color:C.gold,background:`${C.gold}14`,padding:"3px 10px",borderRadius:20}}>{warnCount} warnings</span>}
-            {errorCount>0 && <span style={{fontSize:11,fontWeight:600,color:C.red,background:`${C.red}14`,padding:"3px 10px",borderRadius:20}}>{errorCount} errors</span>}
+            {warnCount  > 0 && <span style={{fontSize:11,fontWeight:600,color:C.gold,  background:`${C.gold}14`,  padding:"3px 10px",borderRadius:20}}>{warnCount} warnings</span>}
+            {dupCount   > 0 && <span style={{fontSize:11,fontWeight:600,color:C.orange,background:`${C.orange}14`,padding:"3px 10px",borderRadius:20}}>{dupCount} possible duplicates</span>}
+            {errorCount > 0 && <span style={{fontSize:11,fontWeight:600,color:C.red,   background:`${C.red}14`,   padding:"3px 10px",borderRadius:20}}>{errorCount} errors</span>}
           </div>
 
-          {/* Line-by-line preview */}
           <div style={{marginBottom:14}}>
             {preview.map((r,i) => {
-              if (r.error) {
-                return (
-                  <div key={i} style={{background:`${C.red}0c`,border:`1px solid ${C.red}30`,borderRadius:8,padding:"9px 12px",marginBottom:6}}>
-                    <div style={{fontSize:11,color:C.red,marginBottom:2}}>✗ {r.error}</div>
-                    <div style={{fontSize:10,color:C.muted,fontFamily:"monospace"}}>{r.raw}</div>
-                  </div>
-                );
-              }
-              const home = tById(teams, r.game.home);
-              const away = tById(teams, r.game.away);
+              if (r.error) return (
+                <div key={i} style={{background:`${C.red}0c`,border:`1px solid ${C.red}30`,borderRadius:R2,padding:"9px 12px",marginBottom:6}}>
+                  <div style={{fontSize:11,color:C.red,marginBottom:2}}>✗ {r.error}</div>
+                  <div style={{fontSize:10,color:C.muted,fontFamily:"monospace"}}>{r.raw}</div>
+                </div>
+              );
               const hasWarn = r.warnings?.length > 0;
+              const borderCol = r.isDuplicate ? C.orange : hasWarn ? C.gold : C.green;
               return (
-                <div key={i} style={{background:hasWarn?`${C.gold}08`:`${C.green}08`,border:`1px solid ${hasWarn?C.gold+"30":C.green+"30"}`,borderRadius:8,padding:"9px 12px",marginBottom:6}}>
-                  <div style={{fontSize:12,fontWeight:500,color:C.text,marginBottom:2}}>
-                    {r.game.day} {r.game.date} · {r.game.time} · {r.game.court}
+                <div key={i} style={{background:`${borderCol}08`,border:`1px solid ${borderCol}30`,borderRadius:R2,padding:"9px 12px",marginBottom:6}}>
+                  <div style={{fontSize:12,fontWeight:600,color:C.text,marginBottom:4}}>
+                    {r.homeTeam?.name||`#${r.game.home}`} <span style={{color:C.muted,fontWeight:400}}>vs</span> {r.awayTeam?.name||`#${r.game.away}`}
+                    {r.isDuplicate && <span style={{fontSize:10,color:C.orange,marginLeft:6}}>⚠ possible duplicate</span>}
                   </div>
                   <div style={{fontSize:11,color:C.muted}}>
-                    {home?.name||`#${r.game.home} (not found)`} <span style={{color:C.light}}>vs</span> {away?.name||`#${r.game.away} (not found)`}
+                    {[r.game.day, r.game.date, r.game.time, r.game.court].filter(Boolean).join(" · ")}
                   </div>
-                  {hasWarn && <div style={{fontSize:10,color:C.gold,marginTop:4}}>⚠ {r.warnings.join(", ")}</div>}
+                  {hasWarn && r.warnings.map((w,wi)=>(
+                    <div key={wi} style={{fontSize:10,color:C.gold,marginTop:3}}>⚠ {w}</div>
+                  ))}
                 </div>
               );
             })}
           </div>
 
-          {/* Import button */}
           {validCount > 0 && !imported && (
             <button onClick={handleImport}
-              style={{width:"100%",padding:"12px",borderRadius:10,border:"none",background:C.gold,
+              style={{width:"100%",padding:"12px",borderRadius:R2,border:"none",background:C.gold,
                 color:"#000",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",
                 letterSpacing:"1px",textTransform:"uppercase"}}>
               Import {validCount} Game{validCount!==1?"s":""}
@@ -2278,8 +2470,8 @@ function AdminBulkImport({ back, teams, games, setGames }) {
           )}
 
           {imported && (
-            <div style={{background:`${C.green}14`,border:`1px solid ${C.green}30`,borderRadius:10,padding:"12px",textAlign:"center"}}>
-              <div style={{fontSize:13,fontWeight:600,color:C.green}}>✓ {validCount} game{validCount!==1?"s":""} imported successfully</div>
+            <div style={{background:`${C.green}14`,border:`1px solid ${C.green}30`,borderRadius:R2,padding:"12px",textAlign:"center"}}>
+              <div style={{fontSize:13,fontWeight:600,color:C.green}}>✓ {validCount} game{validCount!==1?"s":""} imported</div>
               <div style={{fontSize:11,color:C.muted,marginTop:4}}>Check the Schedule tab to verify.</div>
             </div>
           )}
@@ -2765,7 +2957,7 @@ const NAV_ICONS = {
 // ─── Subs Board ───────────────────────────────────────────────────────────────
 const SUBS_STORAGE_KEY = "fp_subs_board";
 
-function SubsBoard({ profile, teams }) {
+function SubsBoard({ profile, teams, adminMode=false }) {
   const [posts,     setPosts]     = useState(() => loadLocal(SUBS_STORAGE_KEY, []));
   const [filter,    setFilter]    = useState("all");
   const [divFilter, setDivFilter] = useState("All");
@@ -2778,6 +2970,8 @@ function SubsBoard({ profile, teams }) {
     setPosts(updated);
     saveLocal(SUBS_STORAGE_KEY, updated);
   };
+
+  const clearFilled = () => savePosts(posts.filter(p => p.status !== "filled"));
 
   const openForm = (type) => {
     setFormType(type);
@@ -2878,6 +3072,12 @@ function SubsBoard({ profile, teams }) {
   // ── Board view ─────────────────────────────────────────────────────────────
   return (
     <div style={{paddingBottom:28}}>
+      {/* Admin batch controls */}
+      {adminMode && posts.some(p=>p.status==="filled") && (
+        <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
+          <DelBtn label={`Clear ${posts.filter(p=>p.status==="filled").length} Filled Posts`} onConfirm={clearFilled}/>
+        </div>
+      )}
       {/* Post buttons */}
       <div style={{display:"flex",gap:8,marginBottom:16}}>
         <button onClick={()=>openForm("needed")}
@@ -2955,6 +3155,7 @@ function SubsBoard({ profile, teams }) {
             )}
 
             {/* Actions — only mine */}
+            {/* Owner actions */}
             {mine && (
               <div style={{display:"flex",gap:6,marginTop:10,paddingTop:10,borderTop:`1px solid ${C.border}`}}>
                 <button onClick={()=>toggleFilled(post.id)}
@@ -2965,6 +3166,12 @@ function SubsBoard({ profile, teams }) {
                   style={{flex:1,padding:"6px",borderRadius:8,border:`1px solid ${C.red}30`,background:"none",fontSize:11,fontWeight:600,cursor:"pointer",color:C.red}}>
                   Delete
                 </button>
+              </div>
+            )}
+            {/* Admin delete (visible even if not owner) */}
+            {adminMode && !mine && (
+              <div style={{marginTop:8,paddingTop:8,borderTop:`1px solid ${C.border}`,display:"flex",justifyContent:"flex-end"}}>
+                <DelBtn onConfirm={()=>deletePost(post.id)}/>
               </div>
             )}
           </div>
@@ -3043,7 +3250,7 @@ function AppInner() {
     announcements: <AnnouncementsTab announcements={info.announcements}/>,
     me:            <ProfileScreen profile={profile} setProfile={setProfile} teams={teams} games={games} standings={standings} setTab={setTab}/>,
     admin:         <AdminScreen games={games} setGames={setGames} teams={teams} setTeams={setTeams} info={info} setInfo={setInfo} bracket={bracket} setBracket={setBracket} adminMode={adminMode}/>,
-    subs:          <SubsBoard profile={profile} teams={teams}/>,
+    subs:          <SubsBoard profile={profile} teams={teams} adminMode={adminMode}/>,
     about:         <AboutScreen/>,
   };
 
