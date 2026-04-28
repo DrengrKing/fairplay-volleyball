@@ -2249,35 +2249,56 @@ function clusterValues(vals, tol) {
 }
 
 function parseFairplayPDF(rawItems, teams) {
-  /*
-   * Fair Play Grid Parser — structural approach
-   * Layout per week block:
-   *   - Date string on the far left (e.g. "April 29th")
-   *   - Time headers in a top row, left→right (e.g. 5:30 5:55 6:15 ...)
-   *   - 5 court rows below each time column: Near, Mid, Far, #4, #5
-   *   - Match cells are in column-major order: all Near/Mid/Far/#4/#5 for
-   *     time-col-0, then all for time-col-1, etc.
-   *
-   * Strategy:
-   *   1. Separate items into: matchups | times | dates | week-headers | courts
-   *   2. Sort time headers left→right by X → ordered list of time strings
-   *   3. Sort match cells by X (column), then Y (row within column)
-   *   4. Each group of 5 consecutive match cells (by X cluster) = one time slot,
-   *      courts assigned by position within group: [Near, Mid, Far, #4, #5]
-   *   5. Date = nearest date text above/left of the match column
-   */
-
   const COURTS   = ["Near", "Mid", "Far", "#4", "#5"];
   const MATCH_RE = /^#?(\d{2,3})\s*vs\.?\s*#?(\d{2,3})$/i;
-  // Times with or without AM/PM, including short formats: 5:30, 5:55, 6:15
   const TIME_RE  = /^(\d{1,2}:\d{2})\s*(AM|PM)?$/i;
-  // Ordinal dates: "April 29th", "April 29", "May 6"
   const DATE_RE  = /((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?)/i;
   const WEEK_RE  = /week\s*(\d+)/i;
+  const YEAR_RE  = /\b(20\d{2})\b/;
+  const MONTH_MAP = {
+    jan:1,feb:2,mar:3,apr:4,may:5,jun:6,
+    jul:7,aug:8,sep:9,oct:10,nov:11,dec:12,
+    january:1,february:2,march:3,april:4,june:6,
+    july:7,august:8,september:9,october:10,november:11,december:12,
+  };
 
   const items = rawItems.filter(i => i.text.length > 0);
+  const fullText = items.map(i => i.text).join(" ");
 
-  // ── 1. Categorise items ────────────────────────────────────────────────
+  // ── Detect year from PDF text (e.g. "Summer 1, 2026") ────────────────
+  const yearMatch = fullText.match(YEAR_RE);
+  const year = yearMatch ? parseInt(yearMatch[1]) : new Date().getFullYear();
+
+  // ── Convert "April 29th" → "2026-04-29" ──────────────────────────────
+  const toISO = (raw) => {
+    if (!raw) return "";
+    // strip ordinal suffix
+    const clean = raw.replace(/(st|nd|rd|th)\b/i,"").trim();
+    const m = clean.match(/((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?)\s+(\d{1,2})/i);
+    if (!m) return "";
+    const monthKey = m[1].toLowerCase().replace(/\.$/,"").slice(0,3);
+    const month = MONTH_MAP[monthKey] || MONTH_MAP[m[1].toLowerCase().replace(/\.$/,"")];
+    if (!month) return "";
+    const day = parseInt(m[2]);
+    return `${year}-${String(month).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+  };
+
+  // Derive day string from ISO
+  const dayFromISO = (iso) => {
+    if (!iso) return "";
+    try {
+      const d = new Date(iso + "T12:00:00");
+      return isNaN(d) ? "" : d.toLocaleDateString("en-US",{weekday:"short"});
+    } catch(e){ return ""; }
+  };
+
+  // Normalise time → "5:55 PM"
+  const normalizeTime = (base, ampm) => {
+    const suffix = ampm ? ampm.toUpperCase() : "PM";
+    return `${base} ${suffix}`;
+  };
+
+  // ── Categorise items ──────────────────────────────────────────────────
   const matchItems = [];
   const timeItems  = [];
   const dateItems  = [];
@@ -2287,110 +2308,89 @@ function parseFairplayPDF(rawItems, teams) {
     const t = item.text.trim();
     if (MATCH_RE.test(t)) { matchItems.push(item); return; }
     const tm = t.match(TIME_RE);
-    if (tm) {
-      // Normalise: add PM if missing (Fairplay leagues run evenings)
-      const base = tm[1], ampm = tm[2] ? tm[2].toUpperCase() : "PM";
-      timeItems.push({...item, timeStr: `${base} ${ampm}`});
-      return;
-    }
+    if (tm) { timeItems.push({...item, timeStr: normalizeTime(tm[1], tm[2])}); return; }
     if (WEEK_RE.test(t)) { weekItems.push(item); return; }
     const dm = t.match(DATE_RE);
     if (dm) {
-      const clean = dm[1].replace(/(st|nd|rd|th)$/i,"").trim();
-      // Capitalise month
-      const dateStr = clean.charAt(0).toUpperCase() + clean.slice(1).toLowerCase();
-      // Derive day
-      let dayStr = "";
-      try {
-        const d = new Date(dateStr + " 2025");
-        if (!isNaN(d)) dayStr = d.toLocaleDateString("en-US",{weekday:"short"});
-      } catch(e){}
-      dateItems.push({...item, dateStr, dayStr});
+      const iso = toISO(dm[1]);
+      if (iso) dateItems.push({...item, iso, dayStr: dayFromISO(iso)});
     }
   });
 
   if (matchItems.length === 0) {
-    return {games:[], warnings:["No match cells found (e.g. '38 vs 43'). Try Manual Paste Import."], debugInfo:{timeItems:[],courtItems:[],dateItems:[],weekItems:[],matchCount:0}};
+    return {games:[], warnings:["No match cells found. Try Manual Paste Import."],
+      debugInfo:{timeItems:[],courtItems:COURTS,dateItems:[],weekItems:[],matchCount:0,columns:[]}};
   }
 
-  // ── 2. Sort time headers left→right by X ──────────────────────────────
+  // ── Sort times left→right ─────────────────────────────────────────────
   const sortedTimes = [...timeItems].sort((a,b) => a.x - b.x);
 
-  // ── 3. Cluster match cells into columns by X position ─────────────────
-  // Two match cells are in the same column if their X values are within 20px
+  // ── Cluster match cells into X-columns (20px tolerance) ──────────────
   const sortedMatches = [...matchItems].sort((a,b) => a.x !== b.x ? a.x - b.x : a.y - b.y);
-
-  const columns = []; // each column = array of match items (sorted by Y)
+  const columns = [];
   sortedMatches.forEach(item => {
     const col = columns.find(c => Math.abs(c.x - item.x) <= 20);
-    if (col) { col.items.push(item); col.x = (col.x * col.items.length + item.x) / (col.items.length + 1); }
-    else columns.push({x: item.x, items: [item]});
+    if (col) { col.sum += item.x; col.count++; col.x = col.sum/col.count; col.items.push(item); }
+    else columns.push({x:item.x, sum:item.x, count:1, items:[item]});
   });
-  // Sort items within each column by Y (top→bottom)
-  columns.forEach(c => { c.items.sort((a,b) => a.y - b.y); });
-  // Sort columns left→right
+  columns.forEach(c => c.items.sort((a,b) => a.y - b.y));
   columns.sort((a,b) => a.x - b.x);
 
-  // ── 4. Assign time to each column ─────────────────────────────────────
-  // Match each column to the time header with the closest X
+  // ── Assign time by closest X ──────────────────────────────────────────
   const assignTime = (colX) => {
-    if (sortedTimes.length === 0) return "";
-    return sortedTimes.reduce((best, t) =>
+    if (!sortedTimes.length) return "";
+    return sortedTimes.reduce((best,t) =>
       Math.abs(t.x - colX) < Math.abs(best.x - colX) ? t : best
     ).timeStr;
   };
 
-  // ── 5. Assign date per column ─────────────────────────────────────────
-  // Find the date whose Y is above (or close to) the column's first match Y
-  const assignDate = (colX, colY) => {
-    const candidates = dateItems.filter(d => d.y <= colY + 30);
-    if (!candidates.length) return {dateStr:"", dayStr:""};
-    // Closest Y above the column
-    const best = candidates.reduce((b,d) => (colY - d.y) < (colY - b.y) && (colY - d.y) >= 0 ? d : b, candidates[0]);
-    return {dateStr: best.dateStr, dayStr: best.dayStr};
+  // ── Assign date by closest Y above ───────────────────────────────────
+  const assignDate = (colY) => {
+    const above = dateItems.filter(d => d.y <= colY + 40);
+    if (!above.length) return {iso:"", dayStr:""};
+    const best = above.reduce((b,d) => Math.abs(d.y-colY) < Math.abs(b.y-colY) ? d : b);
+    return {iso: best.iso, dayStr: best.dayStr};
   };
 
   const assignWeek = (colY) => {
-    const candidates = weekItems.filter(w => w.y <= colY + 30);
-    if (!candidates.length) return 1;
-    const best = candidates.reduce((b,w) => (colY - w.y) < (colY - b.y) ? w : b, candidates[0]);
+    const above = weekItems.filter(w => w.y <= colY + 40);
+    if (!above.length) return 1;
+    const best = above.reduce((b,w) => Math.abs(w.y-colY)<Math.abs(b.y-colY)?w:b);
     const wm = best.text.match(WEEK_RE);
     return wm ? parseInt(wm[1]) : 1;
   };
 
-  // ── 6. Build game objects ──────────────────────────────────────────────
-  const results  = [];
+  // ── Build games ───────────────────────────────────────────────────────
+  const results = [];
   const warnings = [];
 
   columns.forEach(col => {
-    const time  = assignTime(col.x);
+    const time = assignTime(col.x);
     const firstY = col.items[0]?.y ?? 0;
-    const {dateStr, dayStr} = assignDate(col.x, firstY);
-    const week  = assignWeek(firstY);
+    const {iso: dateISO, dayStr} = assignDate(firstY);
+    const week = assignWeek(firstY);
 
-    if (!time)    warnings.push(`Column at x≈${Math.round(col.x)}: no time header matched`);
-    if (!dateStr) warnings.push(`Column at x≈${Math.round(col.x)}: no date detected`);
+    if (!time)    warnings.push(`Column x≈${Math.round(col.x)}: no time matched`);
+    if (!dateISO) warnings.push(`Column x≈${Math.round(col.x)}: no date detected (year=${year})`);
 
-    // Each item in this column maps to a court by index (0=Near, 1=Mid, 2=Far, 3=#4, 4=#5)
-    // If there are more than 5, wrap around (multiple weeks stacked)
     col.items.forEach((item, rowIdx) => {
-      const court   = COURTS[rowIdx % COURTS.length];
-      const m       = item.text.match(MATCH_RE);
+      const court = COURTS[rowIdx % COURTS.length];
+      const m = item.text.match(MATCH_RE);
       if (!m) return;
-      const homeId  = parseInt(m[1]);
-      const awayId  = parseInt(m[2]);
+      const homeId = parseInt(m[1]);
+      const awayId = parseInt(m[2]);
       const homeTeam = teams.find(t => t.id === homeId);
       const awayTeam = teams.find(t => t.id === awayId);
       const w = [];
-      if (!homeTeam) w.push(`#${homeId} not in team list`);
-      if (!awayTeam) w.push(`#${awayId} not in team list`);
+      if (!homeTeam) w.push(`#${homeId} not in app team list`);
+      if (!awayTeam) w.push(`#${awayId} not in app team list`);
 
       results.push({
         game:{
           id:     Date.now() + results.length,
           day:    dayStr,
-          date:   dateStr,
-          time:   time   || "",
+          date:   dateISO,   // ← ISO format for date input
+          time:   time || "",
           court,
           home:   homeId,
           away:   awayId,
@@ -2400,23 +2400,28 @@ function parseFairplayPDF(rawItems, teams) {
           _week:  week,
         },
         homeTeam, awayTeam, warnings: w,
+        // display-friendly labels
+        _homeName: homeTeam?.name || `Team #${homeId}`,
+        _awayName: awayTeam?.name || `Team #${awayId}`,
       });
     });
   });
 
   const debugInfo = {
-    timeItems:  sortedTimes.map(t => `${t.timeStr}@x${Math.round(t.x)}`),
-    courtItems: COURTS.map(c => c),
-    dateItems:  dateItems.map(d => `${d.dateStr}@(${Math.round(d.x)},${Math.round(d.y)})`),
-    weekItems:  weekItems.map(w => `${w.text}@y${Math.round(w.y)}`),
+    year,
+    timeItems:  sortedTimes.map(t=>`${t.timeStr}@x${Math.round(t.x)}`),
+    courtItems: COURTS,
+    dateItems:  dateItems.map(d=>`${d.iso}@(${Math.round(d.x)},${Math.round(d.y)})`),
+    weekItems:  weekItems.map(w=>`${w.text}@y${Math.round(w.y)}`),
     matchCount: matchItems.length,
-    columns:    columns.map(c => `x≈${Math.round(c.x)} [${c.items.length} matches]`),
+    columns:    columns.map(c=>`x≈${Math.round(c.x)}[${c.items.length}]`),
   };
 
   return {games: results, warnings, debugInfo};
 }
 
 const MATCH_RE_CHECK = (s) => /\d{2,3}\s*vs\.?\s*\d{2,3}/i.test(s);
+
 
 
 function AdminBulkPDF({ back, teams, games, setGames }) {
@@ -2466,12 +2471,27 @@ function AdminBulkPDF({ back, teams, games, setGames }) {
   const doImport = (replace) => {
     const toAdd = parsed
       .filter(r => replace || !r.isDuplicate)
-      .map(r => ({
-        ...r.game,
-        date:  globalDate || r._editDate  || r.game.date,
-        time:  r._editTime  || r.game.time,
-        court: r._editCourt || r.game.court,
-      }));
+      .map(r => {
+        const isoDate = globalDate || r._editDate || r.game.date || "";
+        let displayDate = isoDate;
+        let dayStr = r.game.day;
+        if (isoDate && /^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
+          try {
+            const d = new Date(isoDate + "T12:00:00");
+            if (!isNaN(d)) {
+              displayDate = d.toLocaleDateString("en-US",{month:"short",day:"numeric"});
+              dayStr = d.toLocaleDateString("en-US",{weekday:"short"});
+            }
+          } catch(e){}
+        }
+        return {
+          ...r.game,
+          date:  displayDate,
+          day:   dayStr,
+          time:  r._editTime  || r.game.time,
+          court: r._editCourt || r.game.court,
+        };
+      });
     const updated = replace ? toAdd : [...games, ...toAdd];
     setGames(updated);
     storageSet("fp_games", JSON.stringify(updated));
@@ -2555,29 +2575,42 @@ function AdminBulkPDF({ back, teams, games, setGames }) {
             <div key={wk} style={{marginBottom:14}}>
               <div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:"1px",marginBottom:6}}>Week {wk}</div>
               {parsed.map((r,idx)=>r.game._week!==wk?null:(()=>{
-                const hn  = r.homeTeam?.name||`#${r.game.home}`;
-                const an  = r.awayTeam?.name||`#${r.game.away}`;
+                const hn  = r._homeName || r.homeTeam?.name || `Team #${r.game.home}`;
+                const an  = r._awayName || r.awayTeam?.name || `Team #${r.game.away}`;
                 const missingDate = !r._editDate && !globalDate;
-                const col = r.isDuplicate ? C.orange : missingDate ? C.red : r.warnings?.length ? C.gold : C.green;
+                const hasWarn = r.warnings?.some(w => !w.includes("not in app team list"));
+                const col = r.isDuplicate ? C.orange : missingDate ? C.red : hasWarn ? C.gold : C.green;
                 return (
                   <div key={idx} style={{background:`${col}08`,border:`1px solid ${col}30`,borderRadius:R2,padding:"9px 12px",marginBottom:6}}>
                     <div style={{fontSize:12,fontWeight:600,color:C.text,marginBottom:6}}>
                       {hn} <span style={{color:C.muted,fontWeight:400}}>vs</span> {an}
                       {r.isDuplicate && <span style={{fontSize:10,color:C.orange,marginLeft:6}}>duplicate</span>}
+                      {/* Show "not in app" as soft info only */}
+                      {r.warnings?.some(w=>w.includes("not in app")) &&
+                        <span style={{fontSize:9,color:C.muted,marginLeft:6}}>⚠ unknown teams</span>}
                     </div>
                     {/* Editable fields */}
                     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6}}>
                       <div>
                         <div style={{fontSize:9,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:3}}>Date</div>
-                        <input value={r._editDate} onChange={e=>updateRow(idx,"_editDate",e.target.value)}
-                          placeholder="e.g. Apr 29"
-                          style={{width:"100%",padding:"5px 7px",borderRadius:R2,border:`1px solid ${missingDate?C.red:C.border}`,fontSize:11,color:C.text,background:C.bg,boxSizing:"border-box",outline:"none"}}/>
+                        {/* DatePick expects ISO YYYY-MM-DD value */}
+                        <input
+                          type="date"
+                          value={r._editDate || ""}
+                          onChange={e=>updateRow(idx,"_editDate",e.target.value)}
+                          style={{width:"100%",padding:"5px 7px",borderRadius:R2,
+                            border:`1px solid ${missingDate?C.red:C.border}`,
+                            fontSize:11,color:r._editDate?C.text:C.muted,
+                            background:C.bg,boxSizing:"border-box",outline:"none",colorScheme:"dark"}}/>
                       </div>
                       <div>
                         <div style={{fontSize:9,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:3}}>Time</div>
                         <select value={r._editTime} onChange={e=>updateRow(idx,"_editTime",e.target.value)}
-                          style={{width:"100%",padding:"5px 7px",borderRadius:R2,border:`1px solid ${r._editTime?C.border:C.gold}`,fontSize:11,color:r._editTime?C.text:C.muted,background:C.bg,outline:"none",boxSizing:"border-box"}}>
-                          <option value="">-- select --</option>
+                          style={{width:"100%",padding:"5px 7px",borderRadius:R2,
+                            border:`1px solid ${r._editTime?C.border:C.gold}`,
+                            fontSize:11,color:r._editTime?C.text:C.muted,
+                            background:C.bg,outline:"none",boxSizing:"border-box",appearance:"none"}}>
+                          <option value="">-- time --</option>
                           {TIME_SLOTS.map(t=><option key={t} value={t}>{t}</option>)}
                         </select>
                       </div>
@@ -2585,7 +2618,9 @@ function AdminBulkPDF({ back, teams, games, setGames }) {
                         <div style={{fontSize:9,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:3}}>Court</div>
                         <input value={r._editCourt} onChange={e=>updateRow(idx,"_editCourt",e.target.value)}
                           placeholder="Near / Mid / Far"
-                          style={{width:"100%",padding:"5px 7px",borderRadius:R2,border:`1px solid ${r._editCourt?C.border:C.gold}`,fontSize:11,color:C.text,background:C.bg,boxSizing:"border-box",outline:"none"}}/>
+                          style={{width:"100%",padding:"5px 7px",borderRadius:R2,
+                            border:`1px solid ${r._editCourt?C.border:C.gold}`,
+                            fontSize:11,color:C.text,background:C.bg,boxSizing:"border-box",outline:"none"}}/>
                       </div>
                     </div>
                     {r.warnings?.filter(w=>!w.includes("not in app")).map((w,wi)=>(
