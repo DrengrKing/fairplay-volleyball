@@ -2249,63 +2249,98 @@ function clusterValues(vals, tol) {
 }
 
 function parseFairplayPDF(rawItems, teams, year) {
+  /*
+   * Fair Play PDF structure (from actual PDF analysis):
+   *
+   * Time headers:  5:30  5:55  6:15  6:45  7:10  7:35  8:05  8:30  9:00  9:25  9:50  Bye
+   *                                                                              (some columns may be empty)
+   * Week block (left side):
+   *   "Week 1"
+   *   "April 29th"   ← date
+   *   "At River"
+   *   "City"
+   *   "Near" "Mid" "Far" "#4" "#5"   ← court labels
+   *
+   * Match cells appear in COLUMN-MAJOR order (left column first, then right).
+   * Within each column: Near, Mid, Far, #4, #5 (top to bottom).
+   *
+   * Key insight: 5:30 may be empty — matches start at 5:55.
+   * We MUST use X-coordinate proximity to assign times (not column index).
+   * We MUST use week-block Y bounding boxes to assign dates.
+   */
+
   const COURTS   = ["Near", "Mid", "Far", "#4", "#5"];
-  const MATCH_RE = /^#?(\d{2,3})\s*vs\.?\s*#?(\d{2,3})$/i;
+  const MATCH_RE = /^#?(\d{1,3})\s*vs\.?\s*#?(\d{1,3})$/i;
   const TIME_RE  = /^(\d{1,2}:\d{2})\s*(AM|PM)?$/i;
-  const DATE_RE  = /((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?)/i;
-  const WEEK_RE  = /week\s*(\d+)/i;
-  const YEAR_RE  = /\b(20\d{2})\b/;  // kept only for debug display
-
-  const items    = rawItems.filter(i => i.text.length > 0);
-  const fullText = items.map(i => i.text).join(" ");
-  const detectedYear = fullText.match(YEAR_RE)?.[1];
-  // year param from admin always wins; fall back to detection, then current year
-  if (!year) year = detectedYear ? parseInt(detectedYear) : new Date().getFullYear();
-
+  const WEEK_RE  = /^week\s*(\d+)$/i;
   const MONTH_MAP = {
     jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12,
     january:1,february:2,march:3,april:4,june:6,july:7,august:8,
     september:9,october:10,november:11,december:12,
   };
 
-  // ── ISO date helper ──────────────────────────────────────────────────────
+  if (!year) year = new Date().getFullYear();
+
+  // toISO: "April 29th" or "May 6" → "2026-04-29"
   const toISO = (raw) => {
     if (!raw) return "";
-    const clean = raw.replace(/(st|nd|rd|th)\b/i,"").trim();
+    const clean = raw.replace(/(st|nd|rd|th)\b/gi,"").trim();
     const m = clean.match(/((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?)\s+(\d{1,2})/i);
     if (!m) return "";
-    const key   = m[1].toLowerCase().replace(/\.$/,"");
+    const key = m[1].toLowerCase().replace(/\.$/, "");
     const month = MONTH_MAP[key] || MONTH_MAP[key.slice(0,3)];
     if (!month) return "";
     const day = parseInt(m[2]);
     return `${year}-${String(month).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
   };
+
   const dayFromISO = (iso) => {
     if (!iso) return "";
     try {
       const d = new Date(iso + "T12:00:00");
-      return isNaN(d) ? "" : d.toLocaleDateString("en-US",{weekday:"short"});
-    } catch(e){ return ""; }
+      return isNaN(d) ? "" : d.toLocaleDateString("en-US", {weekday:"short"});
+    } catch(e) { return ""; }
   };
 
-  // ── Categorise items ─────────────────────────────────────────────────────
-  const matchItems = [];
-  const timeItems  = [];
-  const dateItems  = [];   // {item, iso}
-  const weekItems  = [];   // {item, weekNum}
+  const items = rawItems.filter(i => i.text.length > 0);
 
-  items.forEach(item => {
-    const t = item.text.trim();
+  // ── Step 1: categorise all items ──────────────────────────────────────────
+  const matchItems = [];
+  const timeItems  = [];  // {text, x, y, timeStr}
+  const dateItems  = [];  // {text, x, y, iso}
+  const weekItems  = [];  // {text, x, y, weekNum}
+
+  // We also want to catch partial date tokens like "May 6" (without "th")
+  // and combine with nearby "th"/"nd"/"rd"/"st" tokens
+  const rawTexts = [...items];
+
+  // Pre-pass: merge ordinal suffixes onto previous tokens
+  // e.g. "May 6" + "th" → "May 6th"
+  const mergedItems = [];
+  for (let i = 0; i < rawTexts.length; i++) {
+    const t  = rawTexts[i].text.trim();
+    const t1 = rawTexts[i+1]?.text.trim() || "";
+    // If this item is a date-like fragment and next item is an ordinal suffix
+    if (/[a-z]+\s+\d{1,2}$/i.test(t) && /^(st|nd|rd|th)$/i.test(t1)) {
+      mergedItems.push({...rawTexts[i], text: t + t1});
+      i++; // skip the suffix token
+    } else {
+      mergedItems.push({...rawTexts[i], text: t});
+    }
+  }
+
+  mergedItems.filter(i => i.text.length > 0).forEach(item => {
+    const t = item.text;
     if (MATCH_RE.test(t)) { matchItems.push(item); return; }
     const tm = t.match(TIME_RE);
     if (tm) {
-      const suffix = tm[2] ? tm[2].toUpperCase() : "PM";
-      timeItems.push({...item, timeStr:`${tm[1]} ${suffix}`});
-      return;
+      const ampm = tm[2] ? tm[2].toUpperCase() : "PM";
+      timeItems.push({...item, timeStr:`${tm[1]} ${ampm}`}); return;
     }
     const wm = t.match(WEEK_RE);
     if (wm) { weekItems.push({...item, weekNum:parseInt(wm[1])}); return; }
-    const dm = t.match(DATE_RE);
+    // Date: look for "Month Day" pattern (with or without ordinal)
+    const dm = t.match(/((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?)/i);
     if (dm) {
       const iso = toISO(dm[1]);
       if (iso) dateItems.push({...item, iso});
@@ -2313,86 +2348,82 @@ function parseFairplayPDF(rawItems, teams, year) {
   });
 
   if (matchItems.length === 0) {
-    return {games:[], warnings:["No match cells found (e.g. '38 vs 43'). Try Manual Paste Import."],
-      debugInfo:{year,timeItems:[],courtItems:COURTS,dateItems:[],weekItems:[],matchCount:0,columns:[]}};
+    return {
+      games: [],
+      warnings: ["No match cells found (e.g. '38 vs 43'). Check that the PDF contains visible matchups."],
+      debugInfo: {year, timeItems:[], dateItems:[], weekItems:[], matchCount:0, columns:[]}
+    };
   }
 
-  // ── Sort times left→right (by X) → this is the authoritative time order ──
+  // ── Step 2: sort time headers left→right ─────────────────────────────────
   const sortedTimes = [...timeItems].sort((a,b) => a.x - b.x);
 
-  // ── Cluster match cells into X-columns ───────────────────────────────────
+  // ── Step 3: cluster match cells into X-columns (25px tolerance) ──────────
   const sortedMatches = [...matchItems].sort((a,b) => a.x !== b.x ? a.x - b.x : a.y - b.y);
   const columns = [];
   sortedMatches.forEach(item => {
-    const col = columns.find(c => Math.abs(c.x - item.x) <= 20);
-    if (col) { col.sum += item.x; col.count++; col.x = col.sum/col.count; col.items.push(item); }
-    else columns.push({x:item.x, sum:item.x, count:1, items:[item]});
+    const existing = columns.find(c => Math.abs(c.cx - item.x) <= 25);
+    if (existing) {
+      existing.items.push(item);
+      existing.cx = existing.items.reduce((s,i)=>s+i.x,0) / existing.items.length;
+    } else {
+      columns.push({cx: item.x, items: [item]});
+    }
   });
   columns.forEach(c => c.items.sort((a,b) => a.y - b.y));
-  columns.sort((a,b) => a.x - b.x);
+  columns.sort((a,b) => a.cx - b.cx);
 
-  // ── FIX 2: Time assignment — column index maps directly to time index ─────
-  // Column 0 → sortedTimes[0], column 1 → sortedTimes[1], etc.
-  // This is deterministic and skips no columns.
-  const timeForColumn = (colIdx) => sortedTimes[colIdx]?.timeStr || "";
+  // ── Step 4: assign time by X proximity (not column index) ────────────────
+  // This handles empty columns like 5:30 correctly.
+  const assignTime = (colCX) => {
+    if (!sortedTimes.length) return "";
+    return sortedTimes.reduce((best, t) =>
+      Math.abs(t.x - colCX) < Math.abs(best.x - colCX) ? t : best
+    ).timeStr;
+  };
 
-  // ── FIX 1: Date assignment — use week block bounding boxes ───────────────
-  // Each week block is bounded by its week header Y and the next week header Y.
-  // All match cells whose Y falls within a week block inherit that block's date.
-  //
-  // Build week blocks: [{weekNum, startY, endY, iso}]
+  // ── Step 5: build week-block date map ─────────────────────────────────────
   const sortedWeeks = [...weekItems].sort((a,b) => a.y - b.y);
   const weekBlocks  = sortedWeeks.map((wk, i) => {
-    const startY = wk.y;
-    const endY   = sortedWeeks[i+1] ? sortedWeeks[i+1].y : Infinity;
-    // Find date items whose Y is between startY and endY (or within 60px below startY)
-    const matchingDates = dateItems.filter(d => d.y >= startY - 20 && d.y <= endY + 20);
-    const iso = matchingDates.length > 0 ? matchingDates[0].iso : "";
+    const startY = wk.y - 5;
+    const endY   = (sortedWeeks[i+1]?.y ?? Infinity) - 5;
+    // Find date items whose Y falls in this block
+    const blockDates = dateItems.filter(d => d.y >= startY && d.y < endY);
+    const iso = blockDates.length > 0 ? blockDates[0].iso : "";
     return {weekNum: wk.weekNum, startY, endY, iso};
   });
 
-  // Fallback: if we have dates but no week blocks, assign dates by Y proximity
-  const isoForMatchY = (matchY) => {
-    if (weekBlocks.length > 0) {
-      // Find which week block this match Y falls in
-      const block = weekBlocks.find(b => matchY >= b.startY - 20 && matchY <= b.endY + 20);
-      if (block?.iso) return {iso: block.iso, weekNum: block.weekNum};
+  const ctxForY = (y) => {
+    // Find which week block this Y is in
+    let block = weekBlocks.find(b => y >= b.startY && y < b.endY);
+    if (!block && weekBlocks.length > 0) {
       // Nearest block above
-      const above = weekBlocks.filter(b => b.startY <= matchY + 20);
-      if (above.length) {
-        const best = above[above.length - 1]; // last one above
-        return {iso: best.iso, weekNum: best.weekNum};
-      }
+      const above = weekBlocks.filter(b => b.startY <= y);
+      block = above.length ? above[above.length - 1] : weekBlocks[0];
     }
-    // No week blocks — use nearest date item above
-    const above = dateItems.filter(d => d.y <= matchY + 40);
-    if (!above.length) return {iso:"", weekNum:1};
-    const best = above.reduce((b,d) => Math.abs(d.y-matchY) < Math.abs(b.y-matchY) ? d : b);
-    return {iso: best.iso, weekNum: 1};
+    return block ? {iso: block.iso, weekNum: block.weekNum} : {iso:"", weekNum:1};
   };
 
-  // ── Build games ───────────────────────────────────────────────────────────
-  const results  = [];
+  // ── Step 6: build games ────────────────────────────────────────────────────
+  const results = [];
   const warnings = [];
 
-  columns.forEach((col, colIdx) => {
-    const time = timeForColumn(colIdx);
-    if (!time) warnings.push(`Column ${colIdx+1} (x≈${Math.round(col.x)}): no time header — check time detection`);
-
+  columns.forEach(col => {
+    const time = assignTime(col.cx);
     col.items.forEach((item, rowIdx) => {
       const court = COURTS[rowIdx % COURTS.length];
       const m = item.text.match(MATCH_RE);
       if (!m) return;
       const homeId = parseInt(m[1]);
       const awayId = parseInt(m[2]);
+      const {iso: dateISO, weekNum} = ctxForY(item.y);
       const homeTeam = teams.find(t => t.id === homeId);
       const awayTeam = teams.find(t => t.id === awayId);
-      const {iso: dateISO, weekNum} = isoForMatchY(item.y);
       const w = [];
       if (!homeTeam) w.push(`#${homeId} not in app team list`);
       if (!awayTeam) w.push(`#${awayId} not in app team list`);
-      if (!dateISO)  w.push("Date not detected — please set manually");
-      if (!time)     w.push("Time not detected — please set manually");
+      if (!dateISO)  w.push("Date not detected — set manually");
+      if (!time)     w.push("Time not detected — set manually");
 
       results.push({
         game:{
@@ -2417,19 +2448,19 @@ function parseFairplayPDF(rawItems, teams, year) {
 
   const debugInfo = {
     year,
-    timeItems:  sortedTimes.map((t,i)=>`[${i}] ${t.timeStr}@x${Math.round(t.x)}`),
-    courtItems: COURTS,
-    dateItems:  dateItems.map(d=>`${d.iso}@(${Math.round(d.x)},${Math.round(d.y)})`),
-    weekItems:  weekItems.map(w=>`Week ${w.weekNum}@y${Math.round(w.y)}`),
-    weekBlocks: weekBlocks.map(b=>`Week${b.weekNum} y${Math.round(b.startY)}-${b.endY===Infinity?"∞":Math.round(b.endY)} → ${b.iso}`),
+    timeItems:  sortedTimes.map((t,i)=>`[${i}] ${t.timeStr} @x${Math.round(t.x)}`),
+    dateItems:  dateItems.map(d=>`${d.iso} @(${Math.round(d.x)},${Math.round(d.y)})`),
+    weekItems:  weekItems.map(w=>`Week${w.weekNum} @y${Math.round(w.y)}`),
+    weekBlocks: weekBlocks.map(b=>`Week${b.weekNum} y${Math.round(b.startY)}-${b.endY===Infinity?"∞":Math.round(b.endY)} → ${b.iso||"NO DATE"}`),
     matchCount: matchItems.length,
-    columns:    columns.map((c,i)=>`col${i} x≈${Math.round(c.x)} [${c.items.length}] → time:${sortedTimes[i]?.timeStr||"?"}`),
+    columns:    columns.map(c=>`cx≈${Math.round(c.cx)} [${c.items.length}] → ${assignTime(c.cx)||"??"}`),
   };
 
   return {games: results, warnings, debugInfo};
 }
 
-const MATCH_RE_CHECK = (s) => /\d{2,3}\s*vs\.?\s*\d{2,3}/i.test(s);
+const MATCH_RE_CHECK = (s) => /\d{1,3}\s*vs\.?\s*\d{1,3}/i.test(s);
+
 
 
 
