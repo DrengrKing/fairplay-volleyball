@@ -492,7 +492,7 @@ function GameCard({game,teams,compact=false,refMode=false,editId,setEditId,updat
             <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",marginBottom:10}}>Details</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
               <DatePick label="Date" value={date} onChange={v=>{ setDate(v); const d=new Date(v+" 2025"); if(!isNaN(d)) setDay(d.toLocaleDateString("en-US",{weekday:"short"})); }}/>
-              <TF label="Time"  value={time}  onChange={setTime}/>
+              <TimePick label="Time" value={time} onChange={setTime}/>
               <TF label="Court" value={court} onChange={setCourt}/>
             </div>
           </div>
@@ -504,7 +504,38 @@ function GameCard({game,teams,compact=false,refMode=false,editId,setEditId,updat
   );
 }
 
-// ─── Drawer ───────────────────────────────────────────────────────────────────
+// ── TimePick — 30-min increment dropdown ─────────────────────────────────────
+const TIME_SLOTS = (() => {
+  const slots = [];
+  for (let h = 5; h <= 23; h++) {
+    for (const m of [0, 30]) {
+      const hour12 = h > 12 ? h - 12 : h === 0 ? 12 : h;
+      const ampm   = h < 12 ? "AM" : "PM";
+      const mStr   = m === 0 ? "00" : "30";
+      slots.push(`${hour12}:${mStr} ${ampm}`);
+    }
+  }
+  return slots;
+})();
+
+function TimePick({ label, value, onChange, optional=false }) {
+  return (
+    <div style={{marginBottom:12}}>
+      {label && <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.8px",marginBottom:5}}>{label}</div>}
+      <select
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        style={{width:"100%",padding:"9px 12px",borderRadius:R2,border:`1px solid ${C.border}`,
+          fontSize:13,color:value?C.text:C.muted,background:C.bg,boxSizing:"border-box",
+          outline:"none",appearance:"none",WebkitAppearance:"none"}}>
+        <option value="">{optional ? "Any time" : "Select time…"}</option>
+        {TIME_SLOTS.map(t => <option key={t} value={t}>{t}</option>)}
+      </select>
+    </div>
+  );
+}
+
+
 function Drawer({open,onClose,setTab,refMode,setRefMode,setEditId}) {
   const items = [
     {id:"home",        icon:"🏠",label:"Home"},
@@ -1870,7 +1901,7 @@ function AdminSchedule({ back, games, setGames, teams }) {
         <button onClick={()=>setSelId(null)} style={{background:"none",border:"none",color:C.gold,fontSize:13,fontWeight:600,cursor:"pointer",padding:"0 0 16px",display:"block"}}>← Back</button>
         <div style={{fontSize:13,fontWeight:600,color:C.text,marginBottom:16}}>{home?.name} vs {away?.name}</div>
         <DatePick label="Date" value={date} onChange={v=>{ setDate(v); const d=new Date(v+" 2025"); if(!isNaN(d)) setDay(d.toLocaleDateString("en-US",{weekday:"short"})); }}/>
-        <TF label="Time"  value={time}  onChange={setTime}  placeholder="6:00 PM"/>
+        <TimePick label="Time" value={time} onChange={setTime}/>
         <TF label="Court" value={court} onChange={setCourt} placeholder="River City — Court 1"/>
         <div style={{marginBottom:14}}>
           <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:8}}>Status</div>
@@ -2754,7 +2785,7 @@ function SubsBoard({ profile, teams }) {
           </div>
         </div>
         <DatePick label={formType==="needed"?"Date Needed *":"Date(s) Available *"} value={form.date} onChange={v=>setForm(p=>({...p,date:v}))}/>
-        <TF label="Time (optional)" value={form.time||""} onChange={v=>setForm(p=>({...p,time:v}))} placeholder="e.g. 7:30 PM"/>
+        <TimePick label="Time (optional)" value={form.time||""} onChange={v=>setForm(p=>({...p,time:v}))} optional/>
         <TF label="Position (optional)" value={form.position} onChange={v=>setForm(p=>({...p,position:v}))} placeholder="e.g. Setter, Any, Female only"/>
         <TA label="Short Note (optional)" value={form.note} onChange={v=>setForm(p=>({...p,note:v}))} rows={2}/>
         {formErr && <div style={{fontSize:12,color:C.red,marginBottom:10}}>⚠ {formErr}</div>}
