@@ -1755,7 +1755,8 @@ function AdminScreen({ games, setGames, teams, setTeams, info, setInfo, bracket,
     {id:"schedule",     icon:"📅",label:"Schedule"},
     {id:"teams",        icon:"👥",label:"Teams"},
     {id:"bracket",      icon:"🎯",label:"Bracket"},
-    {id:"bulkimport",   icon:"📋",label:"Bulk Import Schedule"},
+    {id:"bulkpdf",      icon:"📄",label:"Upload Schedule PDF"},
+    {id:"bulkimport",   icon:"📋",label:"Manual Paste Import"},
     {id:"bulkteams",    icon:"👥",label:"Bulk Import Teams"},
     {id:"backup",       icon:"💾",label:"Backup & Restore"},
   ];
@@ -1810,6 +1811,10 @@ function AdminScreen({ games, setGames, teams, setTeams, info, setInfo, bracket,
   }
 
   // ── Bulk Import ────────────────────────────────────────────────────────────
+  if (section === "bulkpdf") {
+    return <AdminBulkPDF back={back} teams={teams} games={games} setGames={setGames}/>;
+  }
+
   if (section === "bulkimport") {
     return <AdminBulkImport back={back} teams={teams} games={games} setGames={setGames}/>;
   }
@@ -2178,7 +2183,364 @@ function AdminBracket({ back, teams }) {
   );
 }
 
-// ── Admin: Bulk Import Schedule ───────────────────────────────────────────────
+// ── Admin: Upload Schedule PDF ────────────────────────────────────────────────
+// Uses PDF.js from cdnjs to parse Fairplay schedule PDFs client-side.
+// Expected layout: Week blocks → Date → Courts (Near/Mid/Far/#4/#5) × Time cols → "38 vs 43" cells
+
+const PDFJS_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+const PDFJS_WORKER = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+// Load PDF.js once
+let _pdfLibPromise = null;
+function loadPDFJS() {
+  if (_pdfLibPromise) return _pdfLibPromise;
+  _pdfLibPromise = new Promise((resolve, reject) => {
+    if (window.pdfjsLib) { resolve(window.pdfjsLib); return; }
+    const script = document.createElement("script");
+    script.src = PDFJS_URL;
+    script.onload = () => {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
+      resolve(window.pdfjsLib);
+    };
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+  return _pdfLibPromise;
+}
+
+// ── PDF text extraction ───────────────────────────────────────────────────────
+async function extractPDFText(arrayBuffer) {
+  const lib = await loadPDFJS();
+  const pdf = await lib.getDocument({data: arrayBuffer}).promise;
+  let allItems = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page  = await pdf.getPage(p);
+    const tc    = await page.getTextContent();
+    const vp    = page.getViewport({scale:1});
+    tc.items.forEach(item => {
+      const tx = item.transform;
+      allItems.push({
+        text: item.str.trim(),
+        x:    Math.round(tx[4]),
+        y:    Math.round(vp.height - tx[5]),  // flip Y (PDF origin is bottom-left)
+        w:    Math.round(item.width),
+        page: p,
+      });
+    });
+  }
+  return allItems.filter(i => i.text.length > 0);
+}
+
+// ── Fairplay schedule parser ─────────────────────────────────────────────────
+// Layout assumptions:
+//   - "Week N" header lines appear periodically
+//   - Date lines like "Monday, May 6" or "May 6"
+//   - Time headers: "6:00 PM", "7:30 PM", "9:00 PM" etc spread across top
+//   - Court labels: "Near", "Mid", "Far", "#4", "#5" in left column
+//   - Match cells: "38 vs 43" anywhere in the grid
+
+function parseFairplayPDF(items, teams) {
+  const results = [];
+  const warnings = [];
+
+  // Sort by page, then Y (top→bottom), then X (left→right)
+  const sorted = [...items].sort((a,b) =>
+    a.page!==b.page ? a.page-b.page : a.y!==b.y ? a.y-b.y : a.x-b.x
+  );
+
+  const texts = sorted.map(i => i.text);
+  const full  = texts.join(" | ");
+
+  // ── Pass 1: extract all "N vs M" matches with surrounding context ──────
+  // Group items into rows (same Y ± tolerance)
+  const ROW_TOL = 6;
+  const rows = [];
+  sorted.forEach(item => {
+    const row = rows.find(r => Math.abs(r.y - item.y) <= ROW_TOL && r.page === item.page);
+    if (row) { row.items.push(item); row.y = (row.y + item.y) / 2; }
+    else rows.push({y:item.y, page:item.page, items:[item]});
+  });
+
+  // ── Pass 2: find structural landmarks ────────────────────────────────
+  const COURT_NAMES = ["near","mid","far","#4","#5","court 1","court 2","court 3","court 4","court 5"];
+  const TIME_RE     = /^(\d{1,2}:\d{2}\s*[AP]M)$/i;
+  const MATCH_RE    = /^#?(\d{2,3})\s+vs\.?\s+#?(\d{2,3})$/i;
+  const DATE_RE     = /([A-Za-z]+,?\s+[A-Za-z]+\s+\d{1,2}|\b[A-Za-z]+\s+\d{1,2}\b)/;
+  const WEEK_RE     = /week\s*(\d+)/i;
+
+  let currentWeek  = 1;
+  let currentDate  = "";
+  let currentDay   = "";
+
+  // Collect time headers (x-positions of time columns)
+  const timeHeaders = {}; // x → timeStr
+  rows.forEach(row => {
+    row.items.forEach(item => {
+      if (TIME_RE.test(item.text)) {
+        timeHeaders[item.x] = item.text.replace(/\s+/," ").toUpperCase();
+        if (!timeHeaders[item.x].includes(" ")) timeHeaders[item.x] += " PM";
+      }
+    });
+  });
+  const timeXs = Object.keys(timeHeaders).map(Number).sort((a,b)=>a-b);
+
+  // Find nearest time column for a given x
+  const nearestTime = (x) => {
+    if (timeXs.length === 0) return "";
+    return timeHeaders[timeXs.reduce((best,tx) => Math.abs(tx-x)<Math.abs(best-x)?tx:best, timeXs[0])];
+  };
+
+  // ── Pass 3: walk rows top→bottom, extract games ───────────────────────
+  let lastCourtRow = null;
+  let lastCourtY   = -999;
+
+  rows.forEach(row => {
+    const rowText = row.items.map(i=>i.text).join(" ");
+
+    // Week header
+    const wk = rowText.match(WEEK_RE);
+    if (wk) { currentWeek = parseInt(wk[1]); return; }
+
+    // Date line
+    const dm = rowText.match(DATE_RE);
+    if (dm && !MATCH_RE.test(rowText.trim())) {
+      const raw = dm[1];
+      currentDate = raw.replace(/^[A-Za-z]+,\s*/,"").trim(); // strip weekday prefix
+      // Derive day
+      try {
+        const d = new Date(currentDate + " 2025");
+        if (!isNaN(d)) currentDay = d.toLocaleDateString("en-US",{weekday:"short"});
+      } catch(e){}
+      return;
+    }
+
+    // Court label row
+    const courtMatch = row.items.find(i => COURT_NAMES.includes(i.text.toLowerCase()));
+    if (courtMatch) {
+      lastCourtRow = row;
+      lastCourtY   = row.y;
+    }
+
+    // Match cells in this row
+    row.items.forEach(item => {
+      const m = item.text.match(MATCH_RE);
+      if (!m) return;
+
+      const homeId = parseInt(m[1]);
+      const awayId = parseInt(m[2]);
+
+      // Court: look for the closest court label above this row (within ~80px)
+      let court = "TBD";
+      if (lastCourtRow && Math.abs(row.y - lastCourtY) < 80) {
+        // Find court label at closest X on that row
+        const cl = lastCourtRow.items
+          .filter(i => COURT_NAMES.includes(i.text.toLowerCase()))
+          .sort((a,b) => Math.abs(a.x - item.x) - Math.abs(b.x - item.x))[0];
+        if (cl) court = cl.text;
+      }
+      // Also check same row for a court label
+      const sameRowCourt = row.items.find(i => COURT_NAMES.includes(i.text.toLowerCase()));
+      if (sameRowCourt) court = sameRowCourt.text;
+
+      // Time: nearest time column
+      const time = nearestTime(item.x) || "";
+
+      const homeTeam = teams.find(t => t.id === homeId);
+      const awayTeam = teams.find(t => t.id === awayId);
+      const homeWarn = !homeTeam ? `Team #${homeId} not in app` : null;
+      const awayWarn = !awayTeam ? `Team #${awayId} not in app` : null;
+      const w = [homeWarn, awayWarn].filter(Boolean);
+
+      results.push({
+        game: {
+          id:     Date.now() + results.length,
+          day:    currentDay,
+          date:   currentDate,
+          time,
+          court,
+          home:   homeId,
+          away:   awayId,
+          status: "Upcoming",
+          hs:     null,
+          as_:    null,
+          _week:  currentWeek,
+        },
+        homeTeam, awayTeam,
+        warnings: w,
+      });
+    });
+  });
+
+  if (results.length === 0) {
+    warnings.push("No match cells found. PDF may use a layout this parser doesn't support. Try Manual Paste Import.");
+  }
+
+  return {games: results, warnings};
+}
+
+function AdminBulkPDF({ back, teams, games, setGames }) {
+  const [status,   setStatus]   = useState("idle"); // idle|loading|preview|done|error
+  const [errMsg,   setErrMsg]   = useState("");
+  const [parsed,   setParsed]   = useState([]);
+  const [topWarns, setTopWarns] = useState([]);
+  const [mode,     setMode]     = useState(null);   // "replace"|"append"
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (file.type !== "application/pdf" && !file.name.endsWith(".pdf")) {
+      setErrMsg("Please select a PDF file."); setStatus("error"); return;
+    }
+    setStatus("loading"); setErrMsg(""); setParsed([]); setMode(null);
+
+    try {
+      const buf = await file.arrayBuffer();
+      const items = await extractPDFText(buf);
+      const {games: raw, warnings} = parseFairplayPDF(items, teams);
+
+      // Dedup against existing
+      const deduped = raw.map(r => {
+        const dup = games.some(g =>
+          ((g.home===r.game.home&&g.away===r.game.away)||(g.home===r.game.away&&g.away===r.game.home)) &&
+          g.date===r.game.date && g.time===r.game.time
+        );
+        return {...r, isDuplicate: dup};
+      });
+
+      setParsed(deduped);
+      setTopWarns(warnings);
+      setStatus("preview");
+    } catch(err) {
+      setErrMsg(`Parse error: ${err.message}`);
+      setStatus("error");
+    }
+  };
+
+  const doImport = (replace) => {
+    const toAdd = parsed.filter(r => !r.isDuplicate || replace).map(r => r.game);
+    const base  = replace ? [] : games;
+    const updated = [...base, ...toAdd];
+    setGames(updated);
+    storageSet("fp_games", JSON.stringify(updated));
+    setMode(replace ? "replace" : "append");
+    setStatus("done");
+  };
+
+  const validCount = parsed.filter(r => r.game.home && r.game.away).length;
+  const warnCount  = parsed.filter(r => r.warnings?.length).length;
+  const dupCount   = parsed.filter(r => r.isDuplicate).length;
+
+  return (
+    <div style={{paddingBottom:28}}>
+      {back}
+      <div style={{fontSize:13,fontWeight:600,color:C.text,marginBottom:4}}>Upload Schedule PDF</div>
+      <div style={{fontSize:11,color:C.muted,marginBottom:14,lineHeight:1.6}}>
+        Upload a Fairplay Volleyball schedule PDF. The app will parse week blocks, dates, courts, times, and match-ups automatically.
+      </div>
+
+      {/* Upload button */}
+      {(status === "idle" || status === "error") && (
+        <>
+          <label style={{display:"block",padding:"16px",borderRadius:R,border:`1.5px dashed ${C.border}`,background:C.bg,color:C.muted,fontSize:13,fontWeight:500,cursor:"pointer",textAlign:"center",boxSizing:"border-box",marginBottom:12}}>
+            📄 Choose Schedule PDF
+            <input type="file" accept=".pdf,application/pdf" onChange={handleFile} style={{display:"none"}}/>
+          </label>
+          {status === "error" && (
+            <div style={{padding:"9px 12px",background:`${C.red}0c`,border:`1px solid ${C.red}30`,borderRadius:R2,fontSize:12,color:C.red}}>{errMsg}</div>
+          )}
+        </>
+      )}
+
+      {/* Loading */}
+      {status === "loading" && (
+        <div style={{padding:"24px 0",textAlign:"center",color:C.muted,fontSize:13}}>
+          <div style={{marginBottom:8,fontSize:20}}>⏳</div>
+          Parsing PDF… this may take a moment.
+        </div>
+      )}
+
+      {/* Preview */}
+      {status === "preview" && (
+        <div>
+          {/* Summary badges */}
+          <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
+            <span style={{fontSize:11,fontWeight:600,color:C.green,background:`${C.green}14`,padding:"3px 10px",borderRadius:20}}>{validCount} games found</span>
+            {warnCount > 0 && <span style={{fontSize:11,fontWeight:600,color:C.gold,background:`${C.gold}14`,padding:"3px 10px",borderRadius:20}}>{warnCount} warnings</span>}
+            {dupCount  > 0 && <span style={{fontSize:11,fontWeight:600,color:C.orange,background:`${C.orange}14`,padding:"3px 10px",borderRadius:20}}>{dupCount} duplicates</span>}
+          </div>
+
+          {/* Top-level parser warnings */}
+          {topWarns.map((w,i) => (
+            <div key={i} style={{padding:"8px 12px",background:`${C.gold}0c`,border:`1px solid ${C.gold}30`,borderRadius:R2,fontSize:11,color:C.gold,marginBottom:8}}>⚠ {w}</div>
+          ))}
+
+          {/* Game list — group by week */}
+          {[...new Set(parsed.map(r=>r.game._week))].map(wk => (
+            <div key={wk} style={{marginBottom:14}}>
+              <div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:"1px",marginBottom:6}}>Week {wk}</div>
+              {parsed.filter(r=>r.game._week===wk).map((r,i) => {
+                const hn = r.homeTeam?.name || `#${r.game.home}`;
+                const an = r.awayTeam?.name || `#${r.game.away}`;
+                const col = r.isDuplicate ? C.orange : r.warnings?.length ? C.gold : C.green;
+                return (
+                  <div key={i} style={{background:`${col}08`,border:`1px solid ${col}30`,borderRadius:R2,padding:"8px 12px",marginBottom:5}}>
+                    <div style={{fontSize:12,fontWeight:600,color:C.text}}>
+                      {hn} <span style={{color:C.muted,fontWeight:400}}>vs</span> {an}
+                      {r.isDuplicate && <span style={{fontSize:10,color:C.orange,marginLeft:6}}>duplicate</span>}
+                    </div>
+                    <div style={{fontSize:10,color:C.muted,marginTop:2}}>
+                      {[r.game.day, r.game.date, r.game.time, r.game.court].filter(Boolean).join(" · ")}
+                    </div>
+                    {r.warnings?.map((w,wi) => (
+                      <div key={wi} style={{fontSize:10,color:C.gold,marginTop:2}}>⚠ {w}</div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+
+          {/* Import actions */}
+          {validCount > 0 && (
+            <div style={{display:"flex",gap:8,marginTop:8}}>
+              <button onClick={()=>doImport(false)}
+                style={{flex:1,padding:"12px",borderRadius:R2,border:`1px solid ${C.border}`,background:C.surf,color:C.text,fontSize:12,fontWeight:600,cursor:"pointer"}}>
+                Append {validCount - dupCount} new
+              </button>
+              <button onClick={()=>doImport(true)}
+                style={{flex:1,padding:"12px",borderRadius:R2,border:"none",background:C.gold,color:"#000",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",textTransform:"uppercase",letterSpacing:"0.8px"}}>
+                Replace All
+              </button>
+            </div>
+          )}
+
+          {/* Try another */}
+          <button onClick={()=>setStatus("idle")}
+            style={{width:"100%",padding:"10px",borderRadius:R2,border:`1px solid ${C.border}`,background:"none",color:C.muted,fontSize:12,cursor:"pointer",marginTop:10}}>
+            Upload different PDF
+          </button>
+        </div>
+      )}
+
+      {/* Done */}
+      {status === "done" && (
+        <div style={{textAlign:"center",padding:"16px 0"}}>
+          <div style={{padding:"12px",background:`${C.green}14`,border:`1px solid ${C.green}30`,borderRadius:R2,marginBottom:12}}>
+            <div style={{fontSize:13,fontWeight:600,color:C.green}}>✓ Schedule imported ({mode === "replace" ? "replaced" : "appended"})</div>
+            <div style={{fontSize:11,color:C.muted,marginTop:4}}>Check the Schedule tab to verify.</div>
+          </div>
+          <button onClick={()=>{setStatus("idle");setParsed([]);}}
+            style={{padding:"10px 20px",borderRadius:R2,border:`1px solid ${C.border}`,background:"none",color:C.muted,fontSize:12,cursor:"pointer"}}>
+            Upload another PDF
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Admin: Bulk Import Schedule (Manual paste) ────────────────────────────────
 function AdminBulkImport({ back, teams, games, setGames }) {
   const [raw,      setRaw]      = useState("");
   const [preview,  setPreview]  = useState(null);
