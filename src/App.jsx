@@ -677,10 +677,34 @@ function Drawer({open,onClose,setTab,refMode,adminMode,enableRef,disableRef,enab
 
 // ─── Home Screen ──────────────────────────────────────────────────────────────
 const NAV_CARDS = [
-  {id:"schedule", label:"Schedule",   sub:"Games & courts",    img:"https://images.unsplash.com/photo-1506784983877-45594efa4cbe?w=600&q=70&fit=crop&crop=center"},
-  {id:"teams",    label:"Teams",      sub:"Rosters & captains", img:"https://images.unsplash.com/photo-1612872087720-bb876e2e67d1?w=600&q=70&fit=crop"},
-  {id:"teams",    label:"Standings",  sub:"Rankings & records", img:"https://images.unsplash.com/photo-1592656094267-764a45160876?w=600&q=70&fit=crop"},
-  {id:"bracket",  label:"Tournament", sub:"Brackets & scores",  img:"https://images.unsplash.com/photo-1567427017947-545c5f8d16ad?w=600&q=70&fit=crop&crop=center"},
+  {
+    id:"schedule",
+    label:"Schedule",
+    sub:"Games & courts",
+    // Clean flip/desk calendar — minimal, bright, professional
+    img:"https://images.unsplash.com/photo-1435527173128-983b87201f4d?w=600&q=80&fit=crop&crop=center",
+  },
+  {
+    id:"teams",
+    label:"Teams",
+    sub:"Rosters & captains",
+    // Sunset beach volleyball silhouette — players jumping, dramatic sky
+    img:"https://images.unsplash.com/photo-1504813184591-01572f98c85f?w=600&q=80&fit=crop&crop=center",
+  },
+  {
+    id:"teams",
+    label:"Standings",
+    sub:"Rankings & records",
+    // Close-up volleyball in sand — shallow depth of field
+    img:"https://images.unsplash.com/photo-1592656094267-764a45160876?w=600&q=80&fit=crop&crop=center",
+  },
+  {
+    id:"bracket",
+    label:"Tournament",
+    sub:"Brackets & scores",
+    // Single gold trophy on dark background — clean, no clutter
+    img:"https://images.unsplash.com/photo-1567427017947-545c5f8d16ad?w=600&q=80&fit=crop&crop=center",
+  },
 ];
 
 function HomeScreen({setTab,info,profile,games,teams}) {
@@ -757,7 +781,7 @@ function HomeScreen({setTab,info,profile,games,teams}) {
         {NAV_CARDS.map(card=>(
           <button key={card.id} onClick={()=>setTab(card.id)} style={{position:"relative",borderRadius:R,overflow:"hidden",border:"none",cursor:"pointer",padding:0,
             backgroundImage:`url(${card.img})`,backgroundSize:"cover",backgroundPosition:"center"}}>
-            <div style={{position:"absolute",inset:0,background:"linear-gradient(to bottom,rgba(5,14,28,0.3) 0%,rgba(5,14,28,0.82) 100%)"}}/>
+            <div style={{position:"absolute",inset:0,background:"linear-gradient(to bottom,rgba(5,14,28,0.25) 0%,rgba(5,14,28,0.72) 60%,rgba(5,14,28,0.88) 100%)"}}/>
             <div style={{position:"absolute",bottom:0,left:0,right:0,padding:"12px 14px",textAlign:"left"}}>
               <div style={{fontSize:17,fontWeight:700,color:"#fff",fontFamily:"'Barlow Condensed',sans-serif",textTransform:"uppercase",letterSpacing:"0.8px",lineHeight:1}}>
                 {card.label}
