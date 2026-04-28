@@ -683,32 +683,28 @@ function Drawer({open,onClose,setTab,refMode,adminMode,enableRef,disableRef,enab
 // ─── Home Screen ──────────────────────────────────────────────────────────────
 const NAV_CARDS = [
   {
-    id:"schedule",
-    label:"Schedule",
-    sub:"Games & courts",
-    // Desk flip calendar — bright, white background, clean
-    img:"https://images.unsplash.com/photo-1506784983877-45594efa4cbe?w=800&q=80&fit=crop&crop=center",
+    id:    "schedule",
+    label: "Schedule",
+    sub:   "Games & courts",
+    img:   "/images/schedule-calendar.jpg",
   },
   {
-    id:"teams",
-    label:"Teams",
-    sub:"Rosters & captains",
-    // Volleyball silhouettes at net, orange sunset sky
-    img:"https://images.unsplash.com/photo-1543269865-cbf427effbad?w=800&q=80&fit=crop&crop=center",
+    id:    "teams",
+    label: "Teams",
+    sub:   "Rosters & captains",
+    img:   "/images/teams-volleyball.jpg",
   },
   {
-    id:"teams",
-    label:"Standings",
-    sub:"Rankings & records",
-    // Mikasa volleyball in sand, yellow net visible, shallow DOF
-    img:"https://images.unsplash.com/photo-1592656094267-764a45160876?w=800&q=80&fit=crop&crop=center",
+    id:    "teams",
+    label: "Standings",
+    sub:   "Rankings & records",
+    img:   "/images/standings-volleyball.jpg",
   },
   {
-    id:"bracket",
-    label:"Tournament",
-    sub:"Brackets & scores",
-    // Single gold trophy on dark background
-    img:"https://images.unsplash.com/photo-1567427017947-545c5f8d16ad?w=800&q=80&fit=crop&crop=center",
+    id:    "bracket",
+    label: "Tournament",
+    sub:   "Brackets & scores",
+    img:   "/images/tournament-trophy.jpg",
   },
 ];
 
