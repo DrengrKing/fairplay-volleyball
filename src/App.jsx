@@ -1,4 +1,22 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, Component } from "react";
+
+class ErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  render() {
+    if (this.state.err) {
+      return (
+        <div style={{padding:24,fontFamily:"monospace",fontSize:12,color:"#f87171",background:"#0b1424",minHeight:"100vh"}}>
+          <div style={{fontWeight:700,marginBottom:8}}>App crashed — error details:</div>
+          <pre style={{whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{String(this.state.err)}</pre>
+          <pre style={{whiteSpace:"pre-wrap",wordBreak:"break-word",color:"#7a93b4",marginTop:8}}>{this.state.err?.stack}</pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 
 // ─── Tokens ───────────────────────────────────────────────────────────────────
 const C = {
@@ -125,12 +143,23 @@ function calcStandings(games, teams) {
   return teams.map(t => ({...t, ...s[t.id]}));
 }
 
-function storageSet(key, val) {
-  try { localStorage.setItem(key, val); } catch(e) {}
+function saveLocal(key, val) {
+  try { localStorage.setItem(key, typeof val === "string" ? val : JSON.stringify(val)); } catch(e) {}
 }
-function storageDel(key) {
+function loadLocal(key, fallback = null) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    return JSON.parse(raw);
+  } catch(e) { return fallback; }
+}
+function removeLocal(key) {
   try { localStorage.removeItem(key); } catch(e) {}
 }
+// Keep old names as aliases so all existing call sites work without changes
+const storageSet = (key, val) => saveLocal(key, val);
+const storageDel = (key)      => removeLocal(key);
+
 
 // ─── Shared UI ────────────────────────────────────────────────────────────────
 // ─── Shared radius / spacing constants ───────────────────────────────────────
@@ -299,7 +328,7 @@ function Empty({text="Nothing here yet."}) {
 }
 
 
-function GameCard({game,teams,compact=false,refMode=false,editId,setEditId,updateGame,myTeamId=null}) {
+function GameCard({game,teams,compact=false,refMode=false,editId,setEditId,updateGame,myTeamIds=[]}) {
   const home = tById(teams, game.home);
   const away = tById(teams, game.away);
   const [hs,    setHs]     = useState(game.hs  ?? 0);
@@ -313,7 +342,7 @@ function GameCard({game,teams,compact=false,refMode=false,editId,setEditId,updat
   if (!home || !away) return null;
   const scored   = game.status === "Live" || game.status === "Final";
   const editing  = refMode && editId === game.id;
-  const isMyGame = myTeamId && (game.home === myTeamId || game.away === myTeamId);
+  const isMyGame = myTeamIds.length > 0 && (myTeamIds.includes(game.home) || myTeamIds.includes(game.away));
 
   const openEdit = () => { setHs(game.hs??0); setAs(game.as_??0); setStat(game.status); setCourt(game.court); setTime(game.time); setDate(game.date); setDay(game.day); setEditId(game.id); };
 
@@ -471,24 +500,20 @@ const NAV_CARDS = [
 ];
 
 function HomeScreen({setTab,info,profile,games,teams}) {
-  const latest    = info.announcements?.[0];
-  const myTeamId  = profile?.teamId || null;
-  const nextGame  = myTeamId ? games.find(g=>(g.home===myTeamId||g.away===myTeamId)&&g.status!=="Final") : null;
-  const oppId     = nextGame ? (nextGame.home===myTeamId ? nextGame.away : nextGame.home) : null;
-  const opp       = oppId ? tById(teams, oppId) : null;
-  const myTeam    = myTeamId ? tById(teams, myTeamId) : null;
+  const latest      = info.announcements?.[0];
+  const myTeamIds   = profile?.teamIds || (profile?.teamId ? [profile.teamId] : []);
+  const nextGame    = myTeamIds.length > 0
+    ? games.find(g => (myTeamIds.includes(g.home) || myTeamIds.includes(g.away)) && g.status !== "Final")
+    : null;
+  const isH         = nextGame ? myTeamIds.includes(nextGame.home) : false;
+  const myTeam      = nextGame ? tById(teams, isH ? nextGame.home : nextGame.away) : null;
+  const opp         = nextGame ? tById(teams, isH ? nextGame.away : nextGame.home) : null;
 
   // Load subs count for alerts
-  const [openSubsCount, setOpenSubsCount] = useState(0);
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(SUBS_STORAGE_KEY);
-      if (raw) {
-        const posts = JSON.parse(raw);
-        setOpenSubsCount(posts.filter(p => p.type==="needed" && p.status==="open").length);
-      }
-    } catch(e) {}
-  }, []);
+  const openSubsCount = (() => {
+    const posts = loadLocal(SUBS_STORAGE_KEY, []);
+    return posts.filter(p => p.type==="needed" && p.status==="open").length;
+  })();
 
   // Build alerts — max 3, priority order
   const liveCount = games.filter(g => g.status==="Live").length;
@@ -612,12 +637,12 @@ function AnnouncementsTab({announcements}) {
 }
 
 // ─── Schedule ─────────────────────────────────────────────────────────────────
-function ScheduleTab({games,teams,refMode,editId,setEditId,updateGame,myTeamId=null}) {
+function ScheduleTab({games,teams,refMode,editId,setEditId,updateGame,myTeamIds=[]}) {
   const [dayF,  setDayF]  = useState("All");
   const [divF,  setDivF]  = useState("All");
   const [statF, setStatF] = useState("All");
   const [q,     setQ]     = useState("");
-  const gp = {teams,refMode,editId,setEditId,updateGame,myTeamId};
+  const gp = {teams,refMode,editId,setEditId,updateGame,myTeamIds};
   const shown = games.filter(g=>{
     const h=tById(teams,g.home); const a=tById(teams,g.away);
     if(!h||!a) return false;
@@ -765,7 +790,7 @@ function TeamsTab({standings,refMode,updateTeam}) {
 }
 
 // ─── Standings ────────────────────────────────────────────────────────────────
-function StandingsTab({standings, myTeamId=null}) {
+function StandingsTab({standings, myTeamIds=[]}) {
   const gc = "26px 1fr 28px 28px 36px 36px 44px";
   return (
     <div>
@@ -785,7 +810,7 @@ function StandingsTab({standings, myTeamId=null}) {
               </div>
               {ts.map((t,i)=>{
                 const d=(t.pf??0)-(t.pa??0);
-                const isMe = myTeamId && t.id === myTeamId;
+                const isMe = myTeamIds.includes(t.id);
                 return (
                   <div key={t.id} style={{display:"grid",gridTemplateColumns:gc,gap:2,padding:"10px 12px",alignItems:"center",
                     borderBottom:i<ts.length-1?`1px solid ${C.border}`:"none",
@@ -820,7 +845,7 @@ function StandingsTab({standings, myTeamId=null}) {
 }
 
 // ─── Teams + Standings (combined) ────────────────────────────────────────────
-function TeamsStandingsTab({standings, refMode, updateTeam, myTeamId=null}) {
+function TeamsStandingsTab({standings, refMode, updateTeam, myTeamIds=[]}) {
   const [view,  setView]  = useState("standings"); // "standings" | "teams"
   const [selId, setSelId] = useState(null);
 
@@ -866,7 +891,7 @@ function TeamsStandingsTab({standings, refMode, updateTeam, myTeamId=null}) {
                   </div>
                   {ts.map((t,i)=>{
                     const d=(t.pf??0)-(t.pa??0);
-                    const isMe=myTeamId&&t.id===myTeamId;
+                    const isMe=myTeamIds.includes(t.id);
                     return (
                       <div key={t.id} onClick={()=>setSelId(t.id)}
                         style={{display:"grid",gridTemplateColumns:gc,gap:2,padding:"10px 12px",alignItems:"center",
@@ -917,7 +942,7 @@ function TeamsStandingsTab({standings, refMode, updateTeam, myTeamId=null}) {
                 {ts.map(t=>(
                   <div key={t.id} onClick={()=>setSelId(t.id)}
                     style={{background:C.surf,borderRadius:12,
-                      border: myTeamId&&t.id===myTeamId ? `1px solid ${C.gold}55` : `1px solid ${C.border}`,
+                      border: myTeamIds.includes(t.id) ? `1px solid ${C.gold}55` : `1px solid ${C.border}`,
                       padding:"12px 15px",marginBottom:8,cursor:"pointer",display:"flex",alignItems:"center",gap:12}}>
                     <Avatar team={t} size={40}/>
                     <div style={{flex:1,minWidth:0}}>
@@ -925,7 +950,7 @@ function TeamsStandingsTab({standings, refMode, updateTeam, myTeamId=null}) {
                         <span style={{fontSize:13,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                           <span style={{color:C.muted,marginRight:4}}>#{t.id}</span>{t.name}
                         </span>
-                        {myTeamId&&t.id===myTeamId&&<span style={{fontSize:8,fontWeight:700,color:C.gold,background:`${C.gold}18`,padding:"1px 5px",borderRadius:3,flexShrink:0,textTransform:"uppercase"}}>Me</span>}
+                        {myTeamIds.includes(t.id)&&<span style={{fontSize:8,fontWeight:700,color:C.gold,background:`${C.gold}18`,padding:"1px 5px",borderRadius:3,flexShrink:0,textTransform:"uppercase"}}>Me</span>}
                       </div>
                       <div style={{fontSize:11,color:C.muted,marginTop:2}}>Capt: {t.captain}</div>
                     </div>
@@ -946,7 +971,7 @@ function TeamsStandingsTab({standings, refMode, updateTeam, myTeamId=null}) {
 }
 
 // ─── Bracket ─────────────────────────────────────────────────────────────────
-function BracketSlot({match,teams,onUpdate,myTeamId=null}) {
+function BracketSlot({match,teams,onUpdate,myTeamIds=[]}) {
   const [editing, setEditing] = useState(false);
   const [hs,   setHs]   = useState(match.hs  ?? 0);
   const [as_,  setAs]   = useState(match.as_ ?? 0);
@@ -954,14 +979,14 @@ function BracketSlot({match,teams,onUpdate,myTeamId=null}) {
   const open = () => { setHs(match.hs??0); setAs(match.as_??0); setDone(match.done); setEditing(true); };
   const homeName = bName(teams, match.home);
   const awayName = bName(teams, match.away);
-  const isMySlot = myTeamId && (match.home === myTeamId || match.away === myTeamId);
+  const isMySlot = myTeamIds.length > 0 && (myTeamIds.includes(match.home) || myTeamIds.includes(match.away));
   return (
     <div style={{background:C.surf,borderRadius:8,overflow:"hidden",minWidth:152,
       border:match.round==="F"?`1.5px solid ${C.gold}`:editing?`1.5px solid ${C.gold}`:isMySlot?`1.5px solid ${C.gold}55`:`1px solid ${C.border}`}}>
       {match.round==="F"&&<div style={{background:C.gold,padding:"3px 10px",fontSize:9,fontWeight:700,color:"#000",letterSpacing:"1px",textTransform:"uppercase"}}>🏆 Championship</div>}
       {[{name:homeName,score:match.hs,si:0,tid:match.home},{name:awayName,score:match.as_,si:1,tid:match.away}].map(({name,score,si,tid})=>{
         const win=match.done&&match.hs!=null&&((si===0&&match.hs>match.as_)||(si===1&&match.as_>match.hs));
-        const isMe = myTeamId && tid === myTeamId;
+        const isMe = myTeamIds.length > 0 && myTeamIds.includes(tid);
         return (
           <div key={si} style={{padding:"7px 10px",display:"flex",justifyContent:"space-between",alignItems:"center",
             borderBottom:si===0?`1px solid ${C.border}`:"none",background:win?`${C.green}14`:C.surf}}>
@@ -1000,10 +1025,10 @@ function BracketSlot({match,teams,onUpdate,myTeamId=null}) {
   );
 }
 
-function BracketTab({teams, myTeamId=null, bracket, updateBracket}) {
+function BracketTab({teams, myTeamIds=[], bracket, updateBracket}) {
   const upd = (id,u) => updateBracket(id,u);
   const qf=bracket.filter(m=>m.round==="QF"), sf=bracket.filter(m=>m.round==="SF"), f=bracket.find(m=>m.round==="F");
-  const sp = {teams,onUpdate:upd,myTeamId};
+  const sp = {teams,onUpdate:upd,myTeamIds};
   return (
     <div>
       <SLabel>Coed B/C-ish Championship</SLabel>
@@ -1196,23 +1221,27 @@ function ProfileScreen({profile,setProfile,teams,games,standings,setTab}) {
   const [pickingTeam, setPickingTeam] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [editName,    setEditName]    = useState("");
+  // multi-team draft selection (used in picker)
+  const [draftIds,    setDraftIds]    = useState([]);
 
   const save = (updates) => {
     const next = {...(profile||{}), ...updates};
     setProfile(next);
-    storageSet("fp_profile", JSON.stringify(next));
+    saveLocal("fp_profile", next);
   };
 
-  const myTeam  = profile?.teamId ? standings.find(t=>t.id===profile.teamId) : null;
-  const rawTeam = profile?.teamId ? tById(teams, profile.teamId) : null;
-  const teamColor = rawTeam?.color || C.gold;
+  // Normalise: support legacy single teamId
+  const myTeamIds = profile?.teamIds || (profile?.teamId ? [profile.teamId] : []);
+  const myTeams   = myTeamIds.map(id => tById(teams, id)).filter(Boolean);
+  const primaryTeam = myTeams[0] || null;
+  const teamColor   = primaryTeam?.color || C.gold;
 
-  const myGames    = profile?.teamId ? games.filter(g=>g.home===profile.teamId||g.away===profile.teamId) : [];
-  const upcoming   = myGames.filter(g=>g.status!=="Final");
-  const recent     = myGames.filter(g=>g.status==="Final").slice(-2).reverse();
-  const nextGame   = upcoming[0] || null;
+  const myGames  = games.filter(g => myTeamIds.includes(g.home) || myTeamIds.includes(g.away));
+  const upcoming = myGames.filter(g => g.status !== "Final");
+  const recent   = myGames.filter(g => g.status === "Final").slice(-3).reverse();
+  const nextGame = upcoming[0] || null;
 
-  // Step 1 — Name
+  // ── Step 1 — Name ──────────────────────────────────────────────────────────
   if (!profile?.name) {
     return (
       <div style={{paddingBottom:28}}>
@@ -1237,39 +1266,64 @@ function ProfileScreen({profile,setProfile,teams,games,standings,setTab}) {
     );
   }
 
-  // Step 2 — Pick team
-  if (!profile?.teamId || pickingTeam) {
+  // ── Step 2 / Change — Pick teams (multi-select) ───────────────────────────
+  if (myTeamIds.length === 0 || pickingTeam) {
+    const initDraft = pickingTeam ? myTeamIds : [];
+    // initialise draft when entering picker
+    const draft = draftIds.length > 0 || pickingTeam ? draftIds : initDraft;
+    const toggle = (id) => setDraftIds(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+    const canSave = draft.length > 0;
     return (
       <div style={{paddingBottom:28}}>
-        <div style={{textAlign:"center",padding:"24px 0 20px"}}>
+        <div style={{textAlign:"center",padding:"24px 0 16px"}}>
           <div style={{fontSize:20,fontWeight:700,color:C.text,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"1px",marginBottom:4}}>
-            {pickingTeam?"Change Team":`Hi ${profile.name} 👋`}
+            {pickingTeam ? "Change Teams" : `Hi ${profile.name} 👋`}
           </div>
-          <div style={{fontSize:13,color:C.muted}}>{pickingTeam?"Select your new team.":"Which team are you on?"}</div>
+          <div style={{fontSize:13,color:C.muted}}>
+            {pickingTeam ? "Tap teams to select or deselect." : "Select all teams you play on."}
+          </div>
         </div>
-        {pickingTeam&&<button onClick={()=>setPickingTeam(false)} style={{background:"none",border:"none",color:C.gold,fontSize:13,fontWeight:600,cursor:"pointer",marginBottom:16,padding:0}}>← Back</button>}
+        {pickingTeam && <button onClick={()=>{setPickingTeam(false);setDraftIds([]);}} style={{background:"none",border:"none",color:C.gold,fontSize:13,fontWeight:600,cursor:"pointer",marginBottom:16,padding:0}}>← Back</button>}
         {DIVS.map(div=>(
           <div key={div} style={{marginBottom:18}}>
             <div style={{fontSize:10,fontWeight:700,color:DIVC[div],textTransform:"uppercase",letterSpacing:"1px",marginBottom:8}}>{div}</div>
-            {teams.filter(t=>t.div===div).map(t=>(
-              <button key={t.id} onClick={()=>{save({teamId:t.id});setPickingTeam(false);}}
-                style={{width:"100%",background:t.id===profile.teamId?`${t.color}18`:C.surf,border:`1px solid ${t.id===profile.teamId?t.color:C.border}`,borderRadius:12,padding:"12px 14px",marginBottom:7,cursor:"pointer",display:"flex",alignItems:"center",gap:12,textAlign:"left"}}>
-                <Avatar team={t} size={34}/>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:14,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</div>
-                  <div style={{fontSize:11,color:C.muted}}>Team #{t.id}</div>
-                </div>
-                {t.id===profile.teamId&&<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.gold} strokeWidth="2.5"><polyline points="20,6 9,17 4,12"/></svg>}
-              </button>
-            ))}
+            {teams.filter(t=>t.div===div).map(t=>{
+              const sel = draft.includes(t.id);
+              return (
+                <button key={t.id} onClick={()=>toggle(t.id)}
+                  style={{width:"100%",background:sel?`${t.color}18`:C.surf,border:`1px solid ${sel?t.color:C.border}`,borderRadius:R,padding:"12px 14px",marginBottom:7,cursor:"pointer",display:"flex",alignItems:"center",gap:12,textAlign:"left"}}>
+                  <Avatar team={t} size={34}/>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:14,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</div>
+                    <div style={{fontSize:11,color:C.muted}}>Team #{t.id}</div>
+                  </div>
+                  <div style={{width:22,height:22,borderRadius:"50%",border:`2px solid ${sel?t.color:C.border}`,background:sel?t.color:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                    {sel && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="3"><polyline points="20,6 9,17 4,12"/></svg>}
+                  </div>
+                </button>
+              );
+            })}
           </div>
         ))}
+        <button onClick={()=>{
+            if (!canSave) return;
+            save({teamIds: draft, teamId: undefined});
+            setPickingTeam(false);
+            setDraftIds([]);
+          }}
+          disabled={!canSave}
+          style={{width:"100%",padding:"14px",borderRadius:R,border:"none",background:canSave?C.gold:C.light,color:canSave?"#000":"#0a1628",fontSize:14,fontWeight:700,cursor:canSave?"pointer":"default",fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"1px",textTransform:"uppercase"}}>
+          {`Save ${draft.length} Team${draft.length!==1?"s":""}`}
+        </button>
       </div>
     );
   }
 
-  // Profile card
-  const diff = (myTeam?.pf??0)-(myTeam?.pa??0);
+  // ── Profile card ──────────────────────────────────────────────────────────
+  const primaryStanding = standings.find(t => t.id === myTeamIds[0]);
+  const diff = (primaryStanding?.pf??0)-(primaryStanding?.pa??0);
 
   return (
     <div style={{paddingBottom:28}}>
@@ -1288,43 +1342,52 @@ function ProfileScreen({profile,setProfile,teams,games,standings,setTab}) {
             <span style={{fontSize:8,fontWeight:700,color:`${C.gold}88`,textTransform:"uppercase",letterSpacing:"2.5px"}}>Fairplay Volleyball · 2025</span>
             <span style={{fontSize:8,fontWeight:700,color:`${C.gold}88`,textTransform:"uppercase",letterSpacing:"1.5px"}}>Player Card</span>
           </div>
-          <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:18}}>
+          {/* Name */}
+          <div style={{display:"flex",alignItems:"flex-start",gap:14,marginBottom:16}}>
             <div style={{width:54,height:54,borderRadius:"50%",flexShrink:0,background:`${teamColor}20`,border:`2px solid ${teamColor}55`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,fontWeight:700,color:teamColor,fontFamily:"'Barlow Condensed',sans-serif"}}>
               {profile.name.charAt(0).toUpperCase()}
             </div>
             <div style={{flex:1,minWidth:0}}>
               {editingName
-                ?<div style={{display:"flex",gap:6,marginBottom:4}}>
-                  <input value={editName} onChange={e=>setEditName(e.target.value)} autoFocus
-                    style={{flex:1,padding:"6px 10px",borderRadius:8,border:`1px solid ${C.border}`,fontSize:15,color:C.text,background:"#0a1628",outline:"none"}}/>
-                  <button onClick={()=>{save({name:editName.trim()||profile.name});setEditingName(false);}}
-                    style={{padding:"6px 12px",borderRadius:8,background:C.gold,border:"none",color:"#000",fontSize:12,fontWeight:700,cursor:"pointer"}}>✓</button>
-                </div>
-                :<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
-                  <span style={{fontSize:20,fontWeight:700,color:C.text,lineHeight:1,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.5px"}}>{profile.name}</span>
-                  <button onClick={()=>{setEditName(profile.name);setEditingName(true);}} style={{background:"none",border:"none",color:C.light,fontSize:11,cursor:"pointer",padding:0}}>✏</button>
-                </div>
+                ? <div style={{display:"flex",gap:6,marginBottom:4}}>
+                    <input value={editName} onChange={e=>setEditName(e.target.value)} autoFocus
+                      style={{flex:1,padding:"6px 10px",borderRadius:R2,border:`1px solid ${C.border}`,fontSize:15,color:C.text,background:"#0a1628",outline:"none"}}/>
+                    <button onClick={()=>{save({name:editName.trim()||profile.name});setEditingName(false);}}
+                      style={{padding:"6px 12px",borderRadius:R2,background:C.gold,border:"none",color:"#000",fontSize:12,fontWeight:700,cursor:"pointer"}}>✓</button>
+                  </div>
+                : <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+                    <span style={{fontSize:20,fontWeight:700,color:C.text,lineHeight:1,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"0.5px"}}>{profile.name}</span>
+                    <button onClick={()=>{setEditName(profile.name);setEditingName(true);}} style={{background:"none",border:"none",color:C.light,fontSize:11,cursor:"pointer",padding:0}}>✏</button>
+                  </div>
               }
-              <div style={{fontSize:12,color:teamColor,fontWeight:600,letterSpacing:"0.3px"}}>{myTeam?`#${myTeam.id} · ${myTeam.name}`:"No team"}</div>
-              <div style={{fontSize:11,color:C.muted,marginTop:2}}>{myTeam?.div||"—"}</div>
+              {/* All selected teams */}
+              <div style={{display:"flex",flexWrap:"wrap",gap:5,marginTop:4}}>
+                {myTeams.map(t=>(
+                  <span key={t.id} style={{fontSize:11,fontWeight:600,color:t.color}}>#{t.id} {t.name}</span>
+                ))}
+              </div>
             </div>
           </div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",background:"rgba(0,0,0,0.35)",borderRadius:10,border:`1px solid ${C.border}`,overflow:"hidden"}}>
-            {[["W",myTeam?.w??0,C.green],["L",myTeam?.l??0,C.red],["PF",myTeam?.pf??0,C.text],["DIFF",diff===0?"—":(diff>0?"+":"")+diff,diff>0?C.green:diff<0?C.red:C.muted]].map(([label,val,clr],i)=>(
-              <div key={label} style={{padding:"10px 0",textAlign:"center",borderRight:i<3?`1px solid ${C.border}`:"none"}}>
-                <div style={{fontSize:19,fontWeight:700,color:clr,fontFamily:"'Barlow Condensed',sans-serif",lineHeight:1}}>{val}</div>
-                <div style={{fontSize:8,color:C.muted,textTransform:"uppercase",letterSpacing:"0.8px",marginTop:3}}>{label}</div>
-              </div>
-            ))}
-          </div>
+          {/* Stats for primary team */}
+          {primaryStanding && (
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",background:"rgba(0,0,0,0.35)",borderRadius:R,border:`1px solid ${C.border}`,overflow:"hidden"}}>
+              {[["W",primaryStanding.w??0,C.green],["L",primaryStanding.l??0,C.red],["PF",primaryStanding.pf??0,C.text],["DIFF",diff===0?"—":(diff>0?"+":"")+diff,diff>0?C.green:diff<0?C.red:C.muted]].map(([label,val,clr],i)=>(
+                <div key={label} style={{padding:"10px 0",textAlign:"center",borderRight:i<3?`1px solid ${C.border}`:"none"}}>
+                  <div style={{fontSize:19,fontWeight:700,color:clr,fontFamily:"'Barlow Condensed',sans-serif",lineHeight:1}}>{val}</div>
+                  <div style={{fontSize:8,color:C.muted,textTransform:"uppercase",letterSpacing:"0.8px",marginTop:3}}>{label}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         <div style={{position:"relative",height:2,background:`linear-gradient(90deg,transparent,${teamColor}55,transparent)`}}/>
       </div>
 
       {/* Next Game */}
       {nextGame ? (()=>{
-        const isH = nextGame.home===profile.teamId;
-        const opp = tById(teams, isH?nextGame.away:nextGame.home);
+        const isH = myTeamIds.includes(nextGame.home);
+        const myT = tById(teams, isH ? nextGame.home : nextGame.away);
+        const opp = tById(teams, isH ? nextGame.away : nextGame.home);
         return (
           <div style={{background:C.surf,border:`1px solid ${C.border}`,borderRadius:R,overflow:"hidden",marginBottom:20}}>
             <div style={{padding:"9px 16px",background:nextGame.status==="Live"?`${C.orange}18`:`${C.gold}0d`,borderBottom:`1px solid ${C.border}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
@@ -1333,17 +1396,17 @@ function ProfileScreen({profile,setProfile,teams,games,standings,setTab}) {
               </span>
               <StatusBadge status={nextGame.status}/>
             </div>
-            <div style={{padding:"16px 16px 14px"}}>
-              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
-                {myTeam&&<Avatar team={myTeam} size={32}/>}
+            <div style={{padding:"14px 16px"}}>
+              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+                {myT&&<Avatar team={myT} size={30}/>}
                 <div style={{flex:1,textAlign:"center"}}><span style={{fontSize:10,fontWeight:600,color:C.muted,letterSpacing:"1.5px",textTransform:"uppercase"}}>vs</span></div>
-                {opp&&<Avatar team={opp} size={32}/>}
+                {opp&&<Avatar team={opp} size={30}/>}
               </div>
-              <div style={{display:"flex",marginBottom:14}}>
-                <div style={{flex:1,fontSize:13,fontWeight:700,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{myTeam?.name}</div>
+              <div style={{display:"flex",marginBottom:12}}>
+                <div style={{flex:1,fontSize:13,fontWeight:700,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{myT?.name}</div>
                 <div style={{flex:1,fontSize:13,fontWeight:700,color:C.text,textAlign:"right",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{opp?.name||"TBD"}</div>
               </div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",background:C.bg,borderRadius:10,border:`1px solid ${C.border}`,overflow:"hidden"}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",background:C.bg,borderRadius:R2,border:`1px solid ${C.border}`,overflow:"hidden"}}>
                 {[["📅",nextGame.day+" "+nextGame.date],["🕐",nextGame.time],["📍",nextGame.court.split("—")[0].trim()]].map(([icon,val],i)=>(
                   <div key={i} style={{padding:"9px 6px",textAlign:"center",borderRight:i<2?`1px solid ${C.border}`:"none"}}>
                     <div style={{fontSize:13,marginBottom:3}}>{icon}</div>
@@ -1363,95 +1426,97 @@ function ProfileScreen({profile,setProfile,teams,games,standings,setTab}) {
       {/* Quick Nav */}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:20}}>
         {[["📅","Schedule","schedule"],["👥","My Team","teams"],["📊","Standings","standings"]].map(([icon,label,target])=>(
-          <button key={target} onClick={()=>setTab(target)}
-            style={{background:C.surf,border:`1px solid ${C.border}`,borderRadius:12,padding:"11px 6px",cursor:"pointer",textAlign:"center",display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+          <button key={target} onClick={()=>setTab(target)} style={{background:C.surf,border:`1px solid ${C.border}`,borderRadius:R,padding:"11px 6px",cursor:"pointer",textAlign:"center",display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
             <span style={{fontSize:18,opacity:0.7}}>{icon}</span>
             <span style={{fontSize:10,fontWeight:600,color:C.muted}}>{label}</span>
           </button>
         ))}
       </div>
 
-      {/* My Team */}
-      {myTeam&&(
-        <div style={{background:C.surf,border:`1px solid ${C.border}`,borderRadius:R,overflow:"hidden",marginBottom:20}}>
-          <div style={{padding:"12px 16px",borderBottom:`1px solid ${C.border}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-            <div style={{display:"flex",alignItems:"center",gap:8}}>
-              <div style={{width:6,height:6,borderRadius:"50%",background:teamColor}}/>
-              <span style={{fontSize:13,fontWeight:700,color:C.text}}>My Team</span>
+      {/* My Teams */}
+      {myTeams.map(myTeam=>{
+        const mySt = standings.find(t=>t.id===myTeam.id);
+        const tGames = games.filter(g=>g.home===myTeam.id||g.away===myTeam.id);
+        const tUpcoming = tGames.filter(g=>g.status!=="Final").slice(0,2);
+        const tRecent   = tGames.filter(g=>g.status==="Final").slice(-2).reverse();
+        return (
+          <div key={myTeam.id} style={{background:C.surf,border:`1px solid ${C.border}`,borderRadius:R,overflow:"hidden",marginBottom:14}}>
+            <div style={{padding:"12px 16px",borderBottom:`1px solid ${C.border}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <div style={{width:6,height:6,borderRadius:"50%",background:myTeam.color}}/>
+                <span style={{fontSize:13,fontWeight:700,color:C.text}}>#{myTeam.id} {myTeam.name}</span>
+              </div>
+              <DivPill div={myTeam.div}/>
             </div>
-            <DivPill div={myTeam.div}/>
-          </div>
-          <div style={{display:"flex",alignItems:"center",gap:10,padding:"11px 16px",borderBottom:`1px solid ${C.border}`}}>
-            <span style={{fontSize:10,color:C.muted,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.5px",minWidth:54}}>Captain</span>
-            <span style={{fontSize:13,fontWeight:500,color:C.text}}>{myTeam.captain||"TBD"}</span>
-          </div>
-          {myTeam.roster?.length>0&&(
-            <div style={{padding:"11px 16px",borderBottom:`1px solid ${C.border}`}}>
-              <div style={{fontSize:10,color:C.muted,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:8}}>Roster</div>
-              <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
-                {myTeam.roster.map((p,i)=>(
-                  <span key={i} style={{fontSize:11,color:C.muted,background:C.bg,border:`1px solid ${C.border}`,borderRadius:R,padding:"2px 9px"}}>{p}</span>
+            {mySt && (
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",borderBottom:`1px solid ${C.border}`}}>
+                {[["W",mySt.w??0,C.green],["L",mySt.l??0,C.red],["Captain",myTeam.captain||"TBD",C.text]].map(([l,v,c],i)=>(
+                  <div key={l} style={{padding:"10px 0",textAlign:"center",borderRight:i<2?`1px solid ${C.border}`:"none"}}>
+                    <div style={{fontSize:15,fontWeight:700,color:c,fontFamily:"'Barlow Condensed',sans-serif"}}>{v}</div>
+                    <div style={{fontSize:9,color:C.muted,textTransform:"uppercase",letterSpacing:"0.5px",marginTop:2}}>{l}</div>
+                  </div>
                 ))}
               </div>
-            </div>
-          )}
-          {upcoming.length>0&&(
-            <div style={{padding:"11px 16px 0",borderBottom:`1px solid ${C.border}`}}>
-              <div style={{fontSize:10,color:C.muted,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:4}}>Upcoming</div>
-              {upcoming.slice(0,3).map(g=>{
-                const isH=g.home===profile.teamId; const opp=tById(teams,isH?g.away:g.home);
-                return (
-                  <div key={g.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:`1px solid ${C.border}`}}>
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontSize:12,fontWeight:500,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>↗ {opp?opp.name:"TBD"}</div>
-                      <div style={{fontSize:10,color:C.muted,marginTop:1}}>{g.day} {g.date} · {g.time}</div>
+            )}
+            {tUpcoming.length>0&&(
+              <div style={{padding:"10px 16px 0",borderBottom:tRecent.length>0?`1px solid ${C.border}`:"none"}}>
+                <div style={{fontSize:10,color:C.muted,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:4}}>Upcoming</div>
+                {tUpcoming.map(g=>{
+                  const isH=g.home===myTeam.id; const opp=tById(teams,isH?g.away:g.home);
+                  return (
+                    <div key={g.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderTop:`1px solid ${C.border}`}}>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:12,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>↗ {opp?.name||"TBD"}</div>
+                        <div style={{fontSize:10,color:C.muted,marginTop:1}}>{g.day} {g.date} · {g.time}</div>
+                      </div>
+                      <StatusBadge status={g.status}/>
                     </div>
-                    <StatusBadge status={g.status}/>
-                  </div>
-                );
-              })}
-              <div style={{height:8}}/>
-            </div>
-          )}
-          {recent.length>0&&(
-            <div style={{padding:"11px 16px 0"}}>
-              <div style={{fontSize:10,color:C.muted,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:4}}>Recent Results</div>
-              {recent.map(g=>{
-                const isH=g.home===profile.teamId; const opp=tById(teams,isH?g.away:g.home);
-                const myS=isH?g.hs:g.as_; const thS=isH?g.as_:g.hs;
-                const won=myS!=null&&myS>thS; const lost=myS!=null&&myS<thS;
-                return (
-                  <div key={g.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:`1px solid ${C.border}`}}>
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontSize:12,fontWeight:500,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>vs {opp?opp.name:"TBD"}</div>
-                      <div style={{fontSize:10,color:C.muted,marginTop:1}}>{g.day} {g.date}</div>
+                  );
+                })}
+                <div style={{height:6}}/>
+              </div>
+            )}
+            {tRecent.length>0&&(
+              <div style={{padding:"10px 16px 0"}}>
+                <div style={{fontSize:10,color:C.muted,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:4}}>Recent</div>
+                {tRecent.map(g=>{
+                  const isH=g.home===myTeam.id; const myS=isH?g.hs:g.as_; const thS=isH?g.as_:g.hs;
+                  const opp=tById(teams,isH?g.away:g.home);
+                  const won=myS!=null&&myS>thS; const lost=myS!=null&&myS<thS;
+                  return (
+                    <div key={g.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderTop:`1px solid ${C.border}`}}>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:12,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>vs {opp?.name||"TBD"}</div>
+                        <div style={{fontSize:10,color:C.muted,marginTop:1}}>{g.day} {g.date}</div>
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:5,flexShrink:0}}>
+                        <span style={{fontSize:9,fontWeight:800,textTransform:"uppercase",color:won?C.green:lost?C.red:C.muted,background:won?`${C.green}18`:lost?`${C.red}18`:`${C.light}18`,padding:"2px 6px",borderRadius:4}}>{won?"W":lost?"L":"T"}</span>
+                        <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,color:won?C.green:lost?C.red:C.muted}}>{myS}–{thS}</span>
+                      </div>
                     </div>
-                    <div style={{display:"flex",alignItems:"center",gap:5,flexShrink:0}}>
-                      <span style={{fontSize:9,fontWeight:800,textTransform:"uppercase",color:won?C.green:lost?C.red:C.muted,background:won?`${C.green}18`:lost?`${C.red}18`:`${C.light}18`,padding:"2px 6px",borderRadius:4}}>{won?"W":lost?"L":"T"}</span>
-                      <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,color:won?C.green:lost?C.red:C.muted}}>{myS}–{thS}</span>
-                    </div>
-                  </div>
-                );
-              })}
-              <div style={{height:8}}/>
-            </div>
-          )}
-        </div>
-      )}
+                  );
+                })}
+                <div style={{height:6}}/>
+              </div>
+            )}
+          </div>
+        );
+      })}
 
       {/* Footer */}
       <div style={{display:"flex",gap:8}}>
-        <button onClick={()=>setPickingTeam(true)} style={{flex:1,background:C.surf,border:`1px solid ${C.border}`,borderRadius:12,padding:"12px",cursor:"pointer",fontSize:12,fontWeight:600,color:C.muted}}>
-          Change Team
+        <button onClick={()=>{setPickingTeam(true);setDraftIds(myTeamIds);}}
+          style={{flex:1,background:C.surf,border:`1px solid ${C.border}`,borderRadius:R,padding:"12px",cursor:"pointer",fontSize:12,fontWeight:600,color:C.muted}}>
+          Change Teams
         </button>
-        <button onClick={()=>{setProfile(null);storageDel("fp_profile");}} style={{flex:1,background:"none",border:`1px solid ${C.red}30`,borderRadius:12,padding:"12px",cursor:"pointer",fontSize:12,fontWeight:600,color:C.red}}>
+        <button onClick={()=>{setProfile(null);removeLocal("fp_profile");}}
+          style={{flex:1,background:"none",border:`1px solid ${C.red}30`,borderRadius:R,padding:"12px",cursor:"pointer",fontSize:12,fontWeight:600,color:C.red}}>
           Clear Profile
         </button>
       </div>
     </div>
   );
 }
-
 // ─── Admin Screen ─────────────────────────────────────────────────────────────
 const ADMIN_PW = "fairplayadmin";
 
@@ -2506,30 +2571,24 @@ const NAV_ICONS = {
 const SUBS_STORAGE_KEY = "fp_subs_board";
 
 function SubsBoard({ profile, teams }) {
-  const [posts,     setPosts]     = useState([]);
-  const [filter,    setFilter]    = useState("all");   // "all" | "needed" | "available"
+  const [posts,     setPosts]     = useState(() => loadLocal(SUBS_STORAGE_KEY, []));
+  const [filter,    setFilter]    = useState("all");
   const [divFilter, setDivFilter] = useState("All");
   const [showForm,  setShowForm]  = useState(false);
-  const [formType,  setFormType]  = useState("needed"); // "needed" | "available"
+  const [formType,  setFormType]  = useState("needed");
   const [form,      setForm]      = useState({ name:"", teamNote:"", div:"", date:"", position:"", note:"" });
   const [formErr,   setFormErr]   = useState("");
 
-  // Load from storage on mount
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(SUBS_STORAGE_KEY);
-      if (raw) { try { setPosts(JSON.parse(raw)); } catch(e) {} }
-    } catch(e) {}
-  }, []);
-
   const savePosts = (updated) => {
     setPosts(updated);
-    storageSet(SUBS_STORAGE_KEY, JSON.stringify(updated));
+    saveLocal(SUBS_STORAGE_KEY, updated);
   };
 
   const openForm = (type) => {
     setFormType(type);
-    setForm({ name: profile?.name || "", teamNote:"", div: profile?.teamId ? (teams.find(t=>t.id===profile.teamId)?.div||"") : "", date:"", position:"", note:"" });
+    const _ids = profile?.teamIds || (profile?.teamId ? [profile.teamId] : []);
+    const _div = _ids.length > 0 ? (teams.find(t=>t.id===_ids[0])?.div||"") : "";
+    setForm({ name: profile?.name || "", teamNote:"", div: _div, date:"", position:"", note:"" });
     setFormErr("");
     setShowForm(true);
   };
@@ -2719,7 +2778,7 @@ const BOTTOM_TABS = [
 const PAGE_TITLE = {schedule:"Schedule",teams:"Teams & Standings",bracket:"Tournament",info:"League Info",announcements:"Announcements",me:"My Profile",admin:"Admin",subs:"Subs Board",about:"About"};
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
-export default function App() {
+function AppInner() {
   const [tab,     setTab]     = useState("home");
   const [drawer,  setDrawer]  = useState(false);
   const [games,   setGames]   = useState(GAMES_INIT);
@@ -2739,31 +2798,31 @@ export default function App() {
   };
 
   useEffect(() => {
-    const tryLoad = (key, onData) => {
-      try {
-        const raw = localStorage.getItem(key);
-        if (raw) { try { onData(JSON.parse(raw)); } catch(e) {} }
-      } catch(e) {}
-    };
-    tryLoad("fp_profile", d => { if (d && typeof d === "object" && !Array.isArray(d)) setProfile(d); });
-    tryLoad("fp_teams",   d => { if (Array.isArray(d) && d.length > 0) setTeams(d); });
-    tryLoad("fp_games",   d => { if (Array.isArray(d) && d.length > 0) setGames(d); });
-    tryLoad("fp_info_announcements", d => { if (Array.isArray(d) && d.length > 0) setInfo(p => ({...p, announcements: d})); });
-    tryLoad("fp_bracket", d => { if (Array.isArray(d) && d.length > 0) setBracket(d); });
+    const p  = loadLocal("fp_profile");
+    const t  = loadLocal("fp_teams");
+    const g  = loadLocal("fp_games");
+    const a  = loadLocal("fp_info_announcements");
+    const br = loadLocal("fp_bracket");
+    const sb = loadLocal(SUBS_STORAGE_KEY);
+    if (p  && typeof p === "object" && !Array.isArray(p)) setProfile(p);
+    if (Array.isArray(t)  && t.length  > 0) setTeams(t);
+    if (Array.isArray(g)  && g.length  > 0) setGames(g);
+    if (Array.isArray(a)  && a.length  > 0) setInfo(prev => ({...prev, announcements: a}));
+    if (Array.isArray(br) && br.length > 0) setBracket(br);
   }, []);
 
   const updateGame = (id,u) => { setGames(p=>p.map(g=>g.id===id?{...g,...u}:g)); setEditId(null); };
   const updateTeam = (id,u) => setTeams(p=>p.map(t=>t.id===id?{...t,...u}:t));
   const updateInfo = (key,val) => setInfo(p=>({...p,[key]:val}));
   const standings  = calcStandings(games, teams);
-  const myTeamId = profile?.teamId || null;
-  const gp         = {games,teams,refMode,editId,setEditId,updateGame,myTeamId};
+  const myTeamIds = profile?.teamIds || (profile?.teamId ? [profile.teamId] : []);
+  const gp         = {games,teams,refMode,editId,setEditId,updateGame,myTeamIds};
   const isHome     = tab === "home";
 
   const screens = {
     schedule:      <ScheduleTab {...gp}/>,
-    teams:         <TeamsStandingsTab standings={standings} refMode={refMode} updateTeam={updateTeam} myTeamId={myTeamId}/>,
-    bracket:       <BracketTab teams={teams} myTeamId={myTeamId} bracket={bracket} updateBracket={updateBracket}/>,
+    teams:         <TeamsStandingsTab standings={standings} refMode={refMode} updateTeam={updateTeam} myTeamIds={myTeamIds}/>,
+    bracket:       <BracketTab teams={teams} myTeamIds={myTeamIds} bracket={bracket} updateBracket={updateBracket}/>,
     info:          <InfoTab info={info} updateInfo={updateInfo} refMode={refMode}/>,
     announcements: <AnnouncementsTab announcements={info.announcements}/>,
     me:            <ProfileScreen profile={profile} setProfile={setProfile} teams={teams} games={games} standings={standings} setTab={setTab}/>,
@@ -2857,4 +2916,8 @@ export default function App() {
       </div>
     </>
   );
+}
+
+export default function App() {
+  return <ErrorBoundary><AppInner/></ErrorBoundary>;
 }
