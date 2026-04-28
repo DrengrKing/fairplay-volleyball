@@ -596,7 +596,12 @@ function Drawer({open,onClose,setTab,refMode,adminMode,enableRef,disableRef,enab
         overflowY:"auto",boxShadow:"2px 0 24px rgba(0,0,0,0.5)"}}>
         <div style={{padding:"20px 20px 16px",borderBottom:`1px solid ${C.border}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <div style={{width:34,height:34,borderRadius:8,background:C.gold,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>🏐</div>
+            <div style={{width:34,height:34,borderRadius:8,background:"transparent",border:`1.5px solid ${C.gold}44`,display:"flex",alignItems:"center",justifyContent:"center"}}>
+              <svg width="24" height="16" viewBox="0 0 36 24" fill="none">
+                <circle cx="12" cy="12" r="10" stroke={C.gold} strokeWidth="2.5" fill="none"/>
+                <circle cx="24" cy="12" r="10" stroke={C.gold} strokeWidth="2.5" fill="none"/>
+              </svg>
+            </div>
             <div>
               <div style={{fontSize:13,fontWeight:700,color:C.text,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"1px"}}>FAIRPLAY VOLLEYBALL</div>
               <div style={{fontSize:10,color:C.muted}}>2025 Spring Season</div>
@@ -681,29 +686,29 @@ const NAV_CARDS = [
     id:"schedule",
     label:"Schedule",
     sub:"Games & courts",
-    // Clean flip/desk calendar — minimal, bright, professional
-    img:"https://images.unsplash.com/photo-1435527173128-983b87201f4d?w=600&q=80&fit=crop&crop=center",
+    // Desk flip calendar — bright, white background, clean
+    img:"https://images.unsplash.com/photo-1506784983877-45594efa4cbe?w=800&q=80&fit=crop&crop=center",
   },
   {
     id:"teams",
     label:"Teams",
     sub:"Rosters & captains",
-    // Sunset beach volleyball silhouette — players jumping, dramatic sky
-    img:"https://images.unsplash.com/photo-1504813184591-01572f98c85f?w=600&q=80&fit=crop&crop=center",
+    // Volleyball silhouettes at net, orange sunset sky
+    img:"https://images.unsplash.com/photo-1543269865-cbf427effbad?w=800&q=80&fit=crop&crop=center",
   },
   {
     id:"teams",
     label:"Standings",
     sub:"Rankings & records",
-    // Close-up volleyball in sand — shallow depth of field
-    img:"https://images.unsplash.com/photo-1592656094267-764a45160876?w=600&q=80&fit=crop&crop=center",
+    // Mikasa volleyball in sand, yellow net visible, shallow DOF
+    img:"https://images.unsplash.com/photo-1592656094267-764a45160876?w=800&q=80&fit=crop&crop=center",
   },
   {
     id:"bracket",
     label:"Tournament",
     sub:"Brackets & scores",
-    // Single gold trophy on dark background — clean, no clutter
-    img:"https://images.unsplash.com/photo-1567427017947-545c5f8d16ad?w=600&q=80&fit=crop&crop=center",
+    // Single gold trophy on dark background
+    img:"https://images.unsplash.com/photo-1567427017947-545c5f8d16ad?w=800&q=80&fit=crop&crop=center",
   },
 ];
 
@@ -3081,14 +3086,14 @@ function AppInner() {
 
           <div style={{flex:1,textAlign:"center"}}>
             {isHome
-              ?<div style={{display:"inline-flex",alignItems:"center",gap:9}}>
-                <svg width="22" height="22" viewBox="0 0 200 200" fill="none" opacity="0.9">
-                  <circle cx="100" cy="100" r="93" stroke={C.gold} strokeWidth="10"/>
-                  <path d="M7 100 C35 52 65 32 100 100 C135 168 165 148 193 100" stroke={C.gold} strokeWidth="8" fill="none"/>
-                  <path d="M7 100 C35 148 65 168 100 100 C135 32 165 52 193 100" stroke={C.gold} strokeWidth="8" fill="none"/>
+              ?<div style={{display:"inline-flex",alignItems:"center",gap:10}}>
+                {/* Two interlocked rings — matches reference logo */}
+                <svg width="36" height="24" viewBox="0 0 36 24" fill="none" opacity="0.95">
+                  <circle cx="12" cy="12" r="10" stroke={C.gold} strokeWidth="2.5" fill="none"/>
+                  <circle cx="24" cy="12" r="10" stroke={C.gold} strokeWidth="2.5" fill="none"/>
                 </svg>
                 <div>
-                  <div style={{fontSize:18,fontWeight:700,color:C.text,lineHeight:1,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"3px",textTransform:"uppercase"}}>FAIRPLAY</div>
+                  <div style={{fontSize:19,fontWeight:700,color:C.text,lineHeight:1,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"3px",textTransform:"uppercase"}}>FAIRPLAY</div>
                   <div style={{fontSize:10,fontWeight:600,color:C.gold,letterSpacing:"3.5px",textTransform:"uppercase",lineHeight:1,marginTop:2}}>VOLLEYBALL</div>
                 </div>
               </div>
