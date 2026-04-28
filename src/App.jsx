@@ -2248,25 +2248,25 @@ function clusterValues(vals, tol) {
   return clusters.map(c => Math.round(c.center)).sort((a,b)=>a-b);
 }
 
-function parseFairplayPDF(rawItems, teams) {
+function parseFairplayPDF(rawItems, teams, year) {
   const COURTS   = ["Near", "Mid", "Far", "#4", "#5"];
   const MATCH_RE = /^#?(\d{2,3})\s*vs\.?\s*#?(\d{2,3})$/i;
   const TIME_RE  = /^(\d{1,2}:\d{2})\s*(AM|PM)?$/i;
   const DATE_RE  = /((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?)/i;
   const WEEK_RE  = /week\s*(\d+)/i;
-  const YEAR_RE  = /\b(20\d{2})\b/;
+  const YEAR_RE  = /\b(20\d{2})\b/;  // kept only for debug display
+
+  const items    = rawItems.filter(i => i.text.length > 0);
+  const fullText = items.map(i => i.text).join(" ");
+  const detectedYear = fullText.match(YEAR_RE)?.[1];
+  // year param from admin always wins; fall back to detection, then current year
+  if (!year) year = detectedYear ? parseInt(detectedYear) : new Date().getFullYear();
+
   const MONTH_MAP = {
     jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12,
     january:1,february:2,march:3,april:4,june:6,july:7,august:8,
     september:9,october:10,november:11,december:12,
   };
-
-  const items    = rawItems.filter(i => i.text.length > 0);
-  const fullText = items.map(i => i.text).join(" ");
-
-  // ── Detect year ─────────────────────────────────────────────────────────
-  const yearMatch = fullText.match(YEAR_RE);
-  const year      = yearMatch ? parseInt(yearMatch[1]) : new Date().getFullYear();
 
   // ── ISO date helper ──────────────────────────────────────────────────────
   const toISO = (raw) => {
@@ -2435,13 +2435,14 @@ const MATCH_RE_CHECK = (s) => /\d{2,3}\s*vs\.?\s*\d{2,3}/i.test(s);
 
 
 function AdminBulkPDF({ back, teams, games, setGames }) {
-  const [status,    setStatus]    = useState("idle");
-  const [errMsg,    setErrMsg]    = useState("");
-  const [parsed,    setParsed]    = useState([]);
-  const [topWarns,  setTopWarns]  = useState([]);
-  const [debugInfo, setDebugInfo] = useState(null);
-  const [showDebug, setShowDebug] = useState(false);
-  const [globalDate, setGlobalDate] = useState(""); // fallback date for all games
+  const [status,      setStatus]      = useState("idle");
+  const [errMsg,      setErrMsg]      = useState("");
+  const [parsed,      setParsed]      = useState([]);
+  const [topWarns,    setTopWarns]    = useState([]);
+  const [debugInfo,   setDebugInfo]   = useState(null);
+  const [showDebug,   setShowDebug]   = useState(false);
+  const [globalDate,  setGlobalDate]  = useState("");
+  const [defaultYear, setDefaultYear] = useState(new Date().getFullYear()); // fallback date for all games
 
   const handleFile = async (e) => {
     const file = e.target.files?.[0];
@@ -2452,7 +2453,7 @@ function AdminBulkPDF({ back, teams, games, setGames }) {
     try {
       const buf   = await file.arrayBuffer();
       const items = await extractPDFText(buf);
-      const {games: raw, warnings, debugInfo: di} = parseFairplayPDF(items, teams);
+      const {games: raw, warnings, debugInfo: di} = parseFairplayPDF(items, teams, defaultYear);
       const deduped = raw.map(r => ({
         ...r,
         isDuplicate: games.some(g =>
@@ -2523,6 +2524,25 @@ function AdminBulkPDF({ back, teams, games, setGames }) {
 
       {(status==="idle"||status==="error") && (
         <>
+          {/* Default Year — admin sets this before parsing */}
+          <div style={{marginBottom:14}}>
+            <div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:"0.8px",marginBottom:6}}>
+              Default Schedule Year
+            </div>
+            <input
+              type="number"
+              value={defaultYear}
+              onChange={e => setDefaultYear(parseInt(e.target.value)||new Date().getFullYear())}
+              min="2020" max="2035"
+              style={{width:"100%",padding:"9px 12px",borderRadius:R2,border:`1px solid ${C.border}`,
+                fontSize:14,color:C.text,background:C.bg,boxSizing:"border-box",outline:"none",
+                fontWeight:600}}
+            />
+            <div style={{fontSize:10,color:C.muted,marginTop:4}}>
+              The parser will combine PDF dates like "April 29th" with this year → {defaultYear}-04-29
+            </div>
+          </div>
+
           <label style={{display:"block",padding:"16px",borderRadius:R,border:`1.5px dashed ${C.border}`,background:C.bg,color:C.muted,fontSize:13,fontWeight:500,cursor:"pointer",textAlign:"center",boxSizing:"border-box",marginBottom:12}}>
             📄 Choose Schedule PDF
             <input type="file" accept=".pdf,application/pdf" onChange={handleFile} style={{display:"none"}}/>
@@ -2565,7 +2585,7 @@ function AdminBulkPDF({ back, teams, games, setGames }) {
             <div style={{marginBottom:10}}>
               <button onClick={()=>setShowDebug(v=>!v)}
                 style={{background:"none",border:`1px solid ${C.border}`,borderRadius:R2,padding:"5px 12px",fontSize:11,color:C.muted,cursor:"pointer"}}>
-                {showDebug?"Hide":"Show"} parser debug ({debugInfo.matchCount} match cells, {debugInfo.timeItems.length} times, {debugInfo.courtItems.length} courts, {debugInfo.dateItems.length} dates)
+                {showDebug?"Hide":"Show"} parser debug (year={debugInfo.year}, {debugInfo.matchCount} match cells, {debugInfo.timeItems.length} times, {debugInfo.dateItems.length} dates)
               </button>
               {showDebug && (
                 <div style={{marginTop:8,background:C.bg,borderRadius:R2,padding:"10px 12px",border:`1px solid ${C.border}`,fontSize:10,color:C.muted,lineHeight:1.8,overflowX:"auto"}}>
