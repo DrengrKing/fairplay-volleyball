@@ -2231,175 +2231,201 @@ async function extractPDFText(arrayBuffer) {
   return allItems.filter(i => i.text.length > 0);
 }
 
-// ── Fairplay schedule parser ─────────────────────────────────────────────────
-// Layout assumptions:
-//   - "Week N" header lines appear periodically
-//   - Date lines like "Monday, May 6" or "May 6"
-//   - Time headers: "6:00 PM", "7:30 PM", "9:00 PM" etc spread across top
-//   - Court labels: "Near", "Mid", "Far", "#4", "#5" in left column
-//   - Match cells: "38 vs 43" anywhere in the grid
 
-function parseFairplayPDF(items, teams) {
-  const results = [];
+// ── Fair Play Grid Parser ─────────────────────────────────────────────────────
+// Strategy: cluster text items by X (columns) and Y (rows) to reconstruct the
+// schedule matrix, then match column headers (times) and row labels (courts).
+
+function clusterValues(vals, tol) {
+  // Group numeric values within `tol` of each other into clusters → centroid
+  const sorted = [...new Set(vals)].sort((a,b)=>a-b);
+  const clusters = [];
+  sorted.forEach(v => {
+    const c = clusters.find(c => Math.abs(c.center - v) <= tol);
+    if (c) { c.vals.push(v); c.center = c.vals.reduce((a,b)=>a+b,0)/c.vals.length; }
+    else clusters.push({center:v, vals:[v]});
+  });
+  return clusters.map(c => Math.round(c.center)).sort((a,b)=>a-b);
+}
+
+function parseFairplayPDF(rawItems, teams) {
+  const results  = [];
   const warnings = [];
+  const debugRows = []; // for manual review grid
 
-  // Sort by page, then Y (top→bottom), then X (left→right)
-  const sorted = [...items].sort((a,b) =>
-    a.page!==b.page ? a.page-b.page : a.y!==b.y ? a.y-b.y : a.x-b.x
+  const MATCH_RE = /^#?(\d{2,3})\s*vs\.?\s*#?(\d{2,3})$/i;
+  const TIME_RE  = /(\d{1,2}:\d{2}\s*[AP]M)/i;
+  const COURT_RE = /^(near|mid|far|#?[45]|court\s*\d)$/i;
+  const DATE_RE  = /([A-Za-z]+\.?\s+\d{1,2}(?:,?\s*\d{4})?)/;
+  const WEEK_RE  = /week\s*(\d+)/i;
+  const DAY_RE   = /^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i;
+
+  // Filter empties, work per page
+  const items = rawItems.filter(i => i.text.length > 0);
+
+  // ── Step 1: cluster Y values into grid rows ──────────────────────────────
+  const yVals = items.map(i => i.y);
+  const rowCenters = clusterValues(yVals, 8);   // 8px tolerance per row
+
+  // ── Step 2: cluster X values into grid columns ───────────────────────────
+  const xVals = items.map(i => i.x);
+  const colCenters = clusterValues(xVals, 18);  // 18px tolerance per column
+
+  // ── Step 3: build grid matrix ─────────────────────────────────────────────
+  // grid[rowIdx][colIdx] = array of text strings in that cell
+  const grid = Array.from({length: rowCenters.length}, () =>
+    Array.from({length: colCenters.length}, () => [])
   );
-
-  const texts = sorted.map(i => i.text);
-  const full  = texts.join(" | ");
-
-  // ── Pass 1: extract all "N vs M" matches with surrounding context ──────
-  // Group items into rows (same Y ± tolerance)
-  const ROW_TOL = 6;
-  const rows = [];
-  sorted.forEach(item => {
-    const row = rows.find(r => Math.abs(r.y - item.y) <= ROW_TOL && r.page === item.page);
-    if (row) { row.items.push(item); row.y = (row.y + item.y) / 2; }
-    else rows.push({y:item.y, page:item.page, items:[item]});
+  items.forEach(item => {
+    const ri = rowCenters.reduce((bi,cy,i) => Math.abs(cy-item.y) < Math.abs(rowCenters[bi]-item.y) ? i : bi, 0);
+    const ci = colCenters.reduce((bi,cx,i) => Math.abs(cx-item.x) < Math.abs(colCenters[bi]-item.x) ? i : bi, 0);
+    grid[ri][ci].push(item.text);
   });
 
-  // ── Pass 2: find structural landmarks ────────────────────────────────
-  const COURT_NAMES = ["near","mid","far","#4","#5","court 1","court 2","court 3","court 4","court 5"];
-  const TIME_RE     = /^(\d{1,2}:\d{2}\s*[AP]M)$/i;
-  const MATCH_RE    = /^#?(\d{2,3})\s+vs\.?\s+#?(\d{2,3})$/i;
-  const DATE_RE     = /([A-Za-z]+,?\s+[A-Za-z]+\s+\d{1,2}|\b[A-Za-z]+\s+\d{1,2}\b)/;
-  const WEEK_RE     = /week\s*(\d+)/i;
+  // Flatten cell to single string
+  const cell = (ri, ci) => (grid[ri]?.[ci] || []).join(" ").trim();
 
-  let currentWeek  = 1;
-  let currentDate  = "";
-  let currentDay   = "";
-
-  // Collect time headers (x-positions of time columns)
-  const timeHeaders = {}; // x → timeStr
-  rows.forEach(row => {
-    row.items.forEach(item => {
-      if (TIME_RE.test(item.text)) {
-        timeHeaders[item.x] = item.text.replace(/\s+/," ").toUpperCase();
-        if (!timeHeaders[item.x].includes(" ")) timeHeaders[item.x] += " PM";
-      }
+  // ── Step 4: find time-header rows ─────────────────────────────────────────
+  // A row is a "time header row" if it contains ≥2 time-like strings
+  const timeHeaderRows = {};  // rowIdx → [{colIdx, timeStr}]
+  rowCenters.forEach((_, ri) => {
+    const times = [];
+    colCenters.forEach((_, ci) => {
+      const t = cell(ri, ci);
+      const m = t.match(TIME_RE);
+      if (m) times.push({ci, timeStr: m[1].toUpperCase()});
     });
+    if (times.length >= 2) timeHeaderRows[ri] = times;
   });
-  const timeXs = Object.keys(timeHeaders).map(Number).sort((a,b)=>a-b);
 
-  // Find nearest time column for a given x
-  const nearestTime = (x) => {
-    if (timeXs.length === 0) return "";
-    return timeHeaders[timeXs.reduce((best,tx) => Math.abs(tx-x)<Math.abs(best-x)?tx:best, timeXs[0])];
-  };
+  // ── Step 5: find court-label column ───────────────────────────────────────
+  // The left-most column containing ≥2 court names is the court column
+  let courtColIdx = 0;
+  let maxCourtHits = 0;
+  colCenters.forEach((_, ci) => {
+    let hits = 0;
+    rowCenters.forEach((_, ri) => { if (COURT_RE.test(cell(ri, ci))) hits++; });
+    if (hits > maxCourtHits) { maxCourtHits = hits; courtColIdx = ci; }
+  });
 
-  // ── Pass 3: walk rows top→bottom, extract games ───────────────────────
-  let lastCourtRow = null;
-  let lastCourtY   = -999;
-
-  rows.forEach(row => {
-    const rowText = row.items.map(i=>i.text).join(" ");
-
-    // Week header
-    const wk = rowText.match(WEEK_RE);
-    if (wk) { currentWeek = parseInt(wk[1]); return; }
-
-    // Date line
+  // ── Step 6: scan week/date context lines ──────────────────────────────────
+  const rowContext = {}; // rowIdx → {week, date, day}
+  let curWeek = 1, curDate = "", curDay = "";
+  rowCenters.forEach((_, ri) => {
+    const rowText = colCenters.map((_,ci) => cell(ri,ci)).join(" ");
+    const wm = rowText.match(WEEK_RE);
+    if (wm) curWeek = parseInt(wm[1]);
     const dm = rowText.match(DATE_RE);
     if (dm && !MATCH_RE.test(rowText.trim())) {
-      const raw = dm[1];
-      currentDate = raw.replace(/^[A-Za-z]+,\s*/,"").trim(); // strip weekday prefix
-      // Derive day
+      curDate = dm[1].replace(/^[A-Za-z]+,?\s*/,"").trim().replace(/,?\s*\d{4}/,"");
       try {
-        const d = new Date(currentDate + " 2025");
-        if (!isNaN(d)) currentDay = d.toLocaleDateString("en-US",{weekday:"short"});
+        const d = new Date(curDate + " 2025");
+        if (!isNaN(d)) curDay = d.toLocaleDateString("en-US",{weekday:"short"});
       } catch(e){}
-      return;
     }
-
-    // Court label row
-    const courtMatch = row.items.find(i => COURT_NAMES.includes(i.text.toLowerCase()));
-    if (courtMatch) {
-      lastCourtRow = row;
-      lastCourtY   = row.y;
-    }
-
-    // Match cells in this row
-    row.items.forEach(item => {
-      const m = item.text.match(MATCH_RE);
-      if (!m) return;
-
-      const homeId = parseInt(m[1]);
-      const awayId = parseInt(m[2]);
-
-      // Court: look for the closest court label above this row (within ~80px)
-      let court = "TBD";
-      if (lastCourtRow && Math.abs(row.y - lastCourtY) < 80) {
-        // Find court label at closest X on that row
-        const cl = lastCourtRow.items
-          .filter(i => COURT_NAMES.includes(i.text.toLowerCase()))
-          .sort((a,b) => Math.abs(a.x - item.x) - Math.abs(b.x - item.x))[0];
-        if (cl) court = cl.text;
-      }
-      // Also check same row for a court label
-      const sameRowCourt = row.items.find(i => COURT_NAMES.includes(i.text.toLowerCase()));
-      if (sameRowCourt) court = sameRowCourt.text;
-
-      // Time: nearest time column
-      const time = nearestTime(item.x) || "";
-
-      const homeTeam = teams.find(t => t.id === homeId);
-      const awayTeam = teams.find(t => t.id === awayId);
-      const homeWarn = !homeTeam ? `Team #${homeId} not in app` : null;
-      const awayWarn = !awayTeam ? `Team #${awayId} not in app` : null;
-      const w = [homeWarn, awayWarn].filter(Boolean);
-
-      results.push({
-        game: {
-          id:     Date.now() + results.length,
-          day:    currentDay,
-          date:   currentDate,
-          time,
-          court,
-          home:   homeId,
-          away:   awayId,
-          status: "Upcoming",
-          hs:     null,
-          as_:    null,
-          _week:  currentWeek,
-        },
-        homeTeam, awayTeam,
-        warnings: w,
-      });
-    });
+    rowContext[ri] = {week: curWeek, date: curDate, day: curDay};
   });
 
+  // ── Step 7: for each time-header row, scan the rows below for courts+games ─
+  const timeRowIdxs = Object.keys(timeHeaderRows).map(Number).sort((a,b)=>a-b);
+
+  timeRowIdxs.forEach((tRowIdx, tIdx) => {
+    const times = timeHeaderRows[tRowIdx]; // [{ci, timeStr}]
+    const nextTimeRow = timeRowIdxs[tIdx+1] ?? rowCenters.length;
+
+    // Rows in this time block (below time header, before next time header)
+    for (let ri = tRowIdx + 1; ri < nextTimeRow; ri++) {
+      const courtLabel = cell(ri, courtColIdx);
+      if (!COURT_RE.test(courtLabel)) continue;
+      const court = courtLabel;
+      const ctx   = rowContext[ri] || rowContext[tRowIdx] || {week:1,date:"",day:""};
+
+      // Scan each time column
+      times.forEach(({ci: tci, timeStr}) => {
+        const matchText = cell(ri, tci);
+        if (!matchText) return;
+        const m = matchText.match(MATCH_RE);
+        if (!m) return;
+
+        const homeId = parseInt(m[1]);
+        const awayId = parseInt(m[2]);
+        const homeTeam = teams.find(t => t.id === homeId);
+        const awayTeam = teams.find(t => t.id === awayId);
+        const w = [];
+        if (!homeTeam) w.push(`Team #${homeId} not in app`);
+        if (!awayTeam) w.push(`Team #${awayId} not in app`);
+
+        results.push({
+          game:{
+            id:     Date.now() + results.length,
+            day:    ctx.day,
+            date:   ctx.date,
+            time:   timeStr,
+            court,
+            home:   homeId,
+            away:   awayId,
+            status: "Upcoming",
+            hs:     null,
+            as_:    null,
+            _week:  ctx.week,
+          },
+          homeTeam, awayTeam, warnings: w,
+        });
+      });
+    }
+  });
+
+  // ── Fallback: if grid approach found nothing, try raw MATCH_RE scan ────────
   if (results.length === 0) {
-    warnings.push("No match cells found. PDF may use a layout this parser doesn't support. Try Manual Paste Import.");
+    warnings.push("Grid detection found 0 games. Falling back to raw text scan…");
+    items.forEach((item, idx) => {
+      const m = item.text.match(MATCH_RE);
+      if (!m) return;
+      const homeId = parseInt(m[1]); const awayId = parseInt(m[2]);
+      const homeTeam = teams.find(t=>t.id===homeId);
+      const awayTeam = teams.find(t=>t.id===awayId);
+      const w = [];
+      if (!homeTeam) w.push(`Team #${homeId} not in app`);
+      if (!awayTeam) w.push(`Team #${awayId} not in app`);
+      results.push({game:{id:Date.now()+idx,day:"",date:"",time:"",court:"TBD",home:homeId,away:awayId,status:"Upcoming",hs:null,as_:null,_week:1},homeTeam,awayTeam,warnings:w});
+    });
   }
 
-  return {games: results, warnings};
+  if (results.length === 0) {
+    warnings.push("No matches found in this PDF. The layout may not be supported.");
+    warnings.push("Use Manual Paste Import as a fallback.");
+  }
+
+  // Build debug grid for manual review (first 20 rows)
+  const debugGrid = rowCenters.slice(0, 30).map((_, ri) =>
+    colCenters.slice(0, 12).map((_, ci) => cell(ri, ci))
+  ).filter(row => row.some(c => c.length > 0));
+  debugRows.push(...debugGrid);
+
+  return {games: results, warnings, debugGrid: debugRows};
 }
 
 function AdminBulkPDF({ back, teams, games, setGames }) {
-  const [status,   setStatus]   = useState("idle"); // idle|loading|preview|done|error
-  const [errMsg,   setErrMsg]   = useState("");
-  const [parsed,   setParsed]   = useState([]);
-  const [topWarns, setTopWarns] = useState([]);
-  const [mode,     setMode]     = useState(null);   // "replace"|"append"
+  const [status,    setStatus]    = useState("idle");
+  const [errMsg,    setErrMsg]    = useState("");
+  const [parsed,    setParsed]    = useState([]);
+  const [topWarns,  setTopWarns]  = useState([]);
+  const [debugGrid, setDebugGrid] = useState([]);
+  const [showDebug, setShowDebug] = useState(false);
+  const [mode,      setMode]      = useState(null);
 
   const handleFile = async (e) => {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    if (file.type !== "application/pdf" && !file.name.endsWith(".pdf")) {
-      setErrMsg("Please select a PDF file."); setStatus("error"); return;
-    }
-    setStatus("loading"); setErrMsg(""); setParsed([]); setMode(null);
+    if (!file.name.endsWith(".pdf")) { setErrMsg("Please select a PDF file."); setStatus("error"); return; }
+    setStatus("loading"); setErrMsg(""); setParsed([]); setMode(null); setShowDebug(false);
 
     try {
-      const buf = await file.arrayBuffer();
+      const buf   = await file.arrayBuffer();
       const items = await extractPDFText(buf);
-      const {games: raw, warnings} = parseFairplayPDF(items, teams);
+      const {games: raw, warnings, debugGrid: dg} = parseFairplayPDF(items, teams);
 
-      // Dedup against existing
       const deduped = raw.map(r => {
         const dup = games.some(g =>
           ((g.home===r.game.home&&g.away===r.game.away)||(g.home===r.game.away&&g.away===r.game.home)) &&
@@ -2410,6 +2436,7 @@ function AdminBulkPDF({ back, teams, games, setGames }) {
 
       setParsed(deduped);
       setTopWarns(warnings);
+      setDebugGrid(dg || []);
       setStatus("preview");
     } catch(err) {
       setErrMsg(`Parse error: ${err.message}`);
@@ -2418,9 +2445,8 @@ function AdminBulkPDF({ back, teams, games, setGames }) {
   };
 
   const doImport = (replace) => {
-    const toAdd = parsed.filter(r => !r.isDuplicate || replace).map(r => r.game);
-    const base  = replace ? [] : games;
-    const updated = [...base, ...toAdd];
+    const toAdd   = parsed.filter(r => replace || !r.isDuplicate).map(r => r.game);
+    const updated = replace ? toAdd : [...games, ...toAdd];
     setGames(updated);
     storageSet("fp_games", JSON.stringify(updated));
     setMode(replace ? "replace" : "append");
@@ -2430,92 +2456,113 @@ function AdminBulkPDF({ back, teams, games, setGames }) {
   const validCount = parsed.filter(r => r.game.home && r.game.away).length;
   const warnCount  = parsed.filter(r => r.warnings?.length).length;
   const dupCount   = parsed.filter(r => r.isDuplicate).length;
+  const newCount   = validCount - dupCount;
 
   return (
     <div style={{paddingBottom:28}}>
       {back}
       <div style={{fontSize:13,fontWeight:600,color:C.text,marginBottom:4}}>Upload Schedule PDF</div>
       <div style={{fontSize:11,color:C.muted,marginBottom:14,lineHeight:1.6}}>
-        Upload a Fairplay Volleyball schedule PDF. The app will parse week blocks, dates, courts, times, and match-ups automatically.
+        Upload a Fairplay Volleyball schedule PDF. Uses the Fair Play Grid Parser — detects time columns, court rows, and match cells by position.
       </div>
 
-      {/* Upload button */}
       {(status === "idle" || status === "error") && (
         <>
           <label style={{display:"block",padding:"16px",borderRadius:R,border:`1.5px dashed ${C.border}`,background:C.bg,color:C.muted,fontSize:13,fontWeight:500,cursor:"pointer",textAlign:"center",boxSizing:"border-box",marginBottom:12}}>
             📄 Choose Schedule PDF
             <input type="file" accept=".pdf,application/pdf" onChange={handleFile} style={{display:"none"}}/>
           </label>
-          {status === "error" && (
-            <div style={{padding:"9px 12px",background:`${C.red}0c`,border:`1px solid ${C.red}30`,borderRadius:R2,fontSize:12,color:C.red}}>{errMsg}</div>
-          )}
+          {status === "error" && <div style={{padding:"9px 12px",background:`${C.red}0c`,border:`1px solid ${C.red}30`,borderRadius:R2,fontSize:12,color:C.red}}>{errMsg}</div>}
         </>
       )}
 
-      {/* Loading */}
       {status === "loading" && (
-        <div style={{padding:"24px 0",textAlign:"center",color:C.muted,fontSize:13}}>
-          <div style={{marginBottom:8,fontSize:20}}>⏳</div>
-          Parsing PDF… this may take a moment.
+        <div style={{padding:"28px 0",textAlign:"center",color:C.muted,fontSize:13}}>
+          <div style={{fontSize:22,marginBottom:8}}>⏳</div>Parsing PDF grid…
         </div>
       )}
 
-      {/* Preview */}
       {status === "preview" && (
         <div>
-          {/* Summary badges */}
-          <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
-            <span style={{fontSize:11,fontWeight:600,color:C.green,background:`${C.green}14`,padding:"3px 10px",borderRadius:20}}>{validCount} games found</span>
-            {warnCount > 0 && <span style={{fontSize:11,fontWeight:600,color:C.gold,background:`${C.gold}14`,padding:"3px 10px",borderRadius:20}}>{warnCount} warnings</span>}
-            {dupCount  > 0 && <span style={{fontSize:11,fontWeight:600,color:C.orange,background:`${C.orange}14`,padding:"3px 10px",borderRadius:20}}>{dupCount} duplicates</span>}
+          {/* Summary */}
+          <div style={{display:"flex",gap:8,marginBottom:10,flexWrap:"wrap"}}>
+            <span style={{fontSize:11,fontWeight:600,color:C.green,  background:`${C.green}14`,  padding:"3px 10px",borderRadius:20}}>{validCount} games</span>
+            {warnCount > 0 && <span style={{fontSize:11,fontWeight:600,color:C.gold,   background:`${C.gold}14`,   padding:"3px 10px",borderRadius:20}}>{warnCount} warnings</span>}
+            {dupCount  > 0 && <span style={{fontSize:11,fontWeight:600,color:C.orange, background:`${C.orange}14`, padding:"3px 10px",borderRadius:20}}>{dupCount} duplicates</span>}
           </div>
 
-          {/* Top-level parser warnings */}
-          {topWarns.map((w,i) => (
+          {topWarns.map((w,i)=>(
             <div key={i} style={{padding:"8px 12px",background:`${C.gold}0c`,border:`1px solid ${C.gold}30`,borderRadius:R2,fontSize:11,color:C.gold,marginBottom:8}}>⚠ {w}</div>
           ))}
 
-          {/* Game list — group by week */}
-          {[...new Set(parsed.map(r=>r.game._week))].map(wk => (
-            <div key={wk} style={{marginBottom:14}}>
-              <div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:"1px",marginBottom:6}}>Week {wk}</div>
-              {parsed.filter(r=>r.game._week===wk).map((r,i) => {
-                const hn = r.homeTeam?.name || `#${r.game.home}`;
-                const an = r.awayTeam?.name || `#${r.game.away}`;
+          {/* Parsed games grouped by week */}
+          {validCount > 0 && [...new Set(parsed.map(r=>r.game._week))].map(wk => (
+            <div key={wk} style={{marginBottom:12}}>
+              <div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:"1px",marginBottom:5}}>Week {wk}</div>
+              {parsed.filter(r=>r.game._week===wk).map((r,i)=>{
+                const hn  = r.homeTeam?.name || `#${r.game.home}`;
+                const an  = r.awayTeam?.name || `#${r.game.away}`;
                 const col = r.isDuplicate ? C.orange : r.warnings?.length ? C.gold : C.green;
                 return (
                   <div key={i} style={{background:`${col}08`,border:`1px solid ${col}30`,borderRadius:R2,padding:"8px 12px",marginBottom:5}}>
                     <div style={{fontSize:12,fontWeight:600,color:C.text}}>
                       {hn} <span style={{color:C.muted,fontWeight:400}}>vs</span> {an}
-                      {r.isDuplicate && <span style={{fontSize:10,color:C.orange,marginLeft:6}}>duplicate</span>}
+                      {r.isDuplicate && <span style={{fontSize:10,color:C.orange,marginLeft:6}}>dup</span>}
                     </div>
                     <div style={{fontSize:10,color:C.muted,marginTop:2}}>
-                      {[r.game.day, r.game.date, r.game.time, r.game.court].filter(Boolean).join(" · ")}
+                      {[r.game.day,r.game.date,r.game.time,r.game.court].filter(Boolean).join(" · ")}
                     </div>
-                    {r.warnings?.map((w,wi) => (
-                      <div key={wi} style={{fontSize:10,color:C.gold,marginTop:2}}>⚠ {w}</div>
-                    ))}
+                    {r.warnings?.map((w,wi)=><div key={wi} style={{fontSize:10,color:C.gold,marginTop:2}}>⚠ {w}</div>)}
                   </div>
                 );
               })}
             </div>
           ))}
 
-          {/* Import actions */}
+          {/* Debug grid toggle */}
+          {debugGrid.length > 0 && (
+            <div style={{marginBottom:12}}>
+              <button onClick={()=>setShowDebug(v=>!v)}
+                style={{background:"none",border:`1px solid ${C.border}`,borderRadius:R2,padding:"6px 12px",fontSize:11,color:C.muted,cursor:"pointer"}}>
+                {showDebug?"Hide":"Show"} extracted grid ({debugGrid.length} rows)
+              </button>
+              {showDebug && (
+                <div style={{marginTop:8,overflowX:"auto",background:C.bg,borderRadius:R2,padding:"8px",border:`1px solid ${C.border}`}}>
+                  <div style={{fontSize:9,color:C.muted,marginBottom:6}}>Raw extracted text grid — use this to verify the PDF parsed correctly. Each row is a detected grid row; each column is a detected column.</div>
+                  <table style={{borderCollapse:"collapse",fontSize:10,minWidth:"100%"}}>
+                    <tbody>
+                      {debugGrid.map((row,ri)=>(
+                        <tr key={ri}>
+                          {row.map((c,ci)=>(
+                            <td key={ci} style={{
+                              border:`1px solid ${C.border}`,padding:"3px 6px",
+                              color: MATCH_RE_CHECK(c) ? C.green : c ? C.text : C.light,
+                              background: MATCH_RE_CHECK(c) ? `${C.green}18` : "transparent",
+                              whiteSpace:"nowrap",maxWidth:80,overflow:"hidden",textOverflow:"ellipsis",
+                            }}>{c||""}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
           {validCount > 0 && (
-            <div style={{display:"flex",gap:8,marginTop:8}}>
+            <div style={{display:"flex",gap:8,marginTop:4}}>
               <button onClick={()=>doImport(false)}
-                style={{flex:1,padding:"12px",borderRadius:R2,border:`1px solid ${C.border}`,background:C.surf,color:C.text,fontSize:12,fontWeight:600,cursor:"pointer"}}>
-                Append {validCount - dupCount} new
+                style={{flex:1,padding:"11px",borderRadius:R2,border:`1px solid ${C.border}`,background:C.surf,color:C.text,fontSize:12,fontWeight:600,cursor:"pointer"}}>
+                Append {newCount} new
               </button>
               <button onClick={()=>doImport(true)}
-                style={{flex:1,padding:"12px",borderRadius:R2,border:"none",background:C.gold,color:"#000",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",textTransform:"uppercase",letterSpacing:"0.8px"}}>
+                style={{flex:1,padding:"11px",borderRadius:R2,border:"none",background:C.gold,color:"#000",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",textTransform:"uppercase",letterSpacing:"0.8px"}}>
                 Replace All
               </button>
             </div>
           )}
 
-          {/* Try another */}
           <button onClick={()=>setStatus("idle")}
             style={{width:"100%",padding:"10px",borderRadius:R2,border:`1px solid ${C.border}`,background:"none",color:C.muted,fontSize:12,cursor:"pointer",marginTop:10}}>
             Upload different PDF
@@ -2523,22 +2570,25 @@ function AdminBulkPDF({ back, teams, games, setGames }) {
         </div>
       )}
 
-      {/* Done */}
       {status === "done" && (
-        <div style={{textAlign:"center",padding:"16px 0"}}>
+        <div style={{textAlign:"center",padding:"12px 0"}}>
           <div style={{padding:"12px",background:`${C.green}14`,border:`1px solid ${C.green}30`,borderRadius:R2,marginBottom:12}}>
-            <div style={{fontSize:13,fontWeight:600,color:C.green}}>✓ Schedule imported ({mode === "replace" ? "replaced" : "appended"})</div>
+            <div style={{fontSize:13,fontWeight:600,color:C.green}}>✓ Schedule imported ({mode})</div>
             <div style={{fontSize:11,color:C.muted,marginTop:4}}>Check the Schedule tab to verify.</div>
           </div>
           <button onClick={()=>{setStatus("idle");setParsed([]);}}
             style={{padding:"10px 20px",borderRadius:R2,border:`1px solid ${C.border}`,background:"none",color:C.muted,fontSize:12,cursor:"pointer"}}>
-            Upload another PDF
+            Upload another
           </button>
         </div>
       )}
     </div>
   );
 }
+
+// tiny helper used in debug table
+const MATCH_RE_CHECK = (s) => /\d{2,3}\s*vs\.?\s*\d{2,3}/i.test(s);
+
 
 // ── Admin: Bulk Import Schedule (Manual paste) ────────────────────────────────
 function AdminBulkImport({ back, teams, games, setGames }) {
