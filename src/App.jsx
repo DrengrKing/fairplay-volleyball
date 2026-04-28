@@ -536,7 +536,23 @@ function TimePick({ label, value, onChange, optional=false }) {
 }
 
 
-function Drawer({open,onClose,setTab,refMode,setRefMode,setEditId}) {
+function Drawer({open,onClose,setTab,refMode,adminMode,enableRef,disableRef,enableAdmin,disableAdmin,setEditId}) {
+  const [showRefPw,   setShowRefPw]   = useState(false);
+  const [showAdminPw, setShowAdminPw] = useState(false);
+  const [pw,          setPw]          = useState("");
+  const [pwErr,       setPwErr]       = useState(false);
+
+  const closeAll = () => { setShowRefPw(false); setShowAdminPw(false); setPw(""); setPwErr(false); };
+
+  const tryRef = () => {
+    if (pw === "fairplayref") { enableRef(); closeAll(); onClose(); }
+    else setPwErr(true);
+  };
+  const tryAdmin = () => {
+    if (pw === "fairplayadmin") { enableAdmin(); closeAll(); onClose(); }
+    else setPwErr(true);
+  };
+
   const items = [
     {id:"home",        icon:"🏠",label:"Home"},
     {id:"schedule",    icon:"📅",label:"Schedule"},
@@ -551,10 +567,30 @@ function Drawer({open,onClose,setTab,refMode,setRefMode,setEditId}) {
     {id:"info",        icon:"📷",label:"Gallery"},
     {id:"info",        icon:"📞",label:"Contact"},
   ];
-  const nav = id => { setTab(id); onClose(); };
+  const nav = id => { setTab(id); closeAll(); onClose(); };
+
+  // Inline password input
+  const PwInput = ({onSubmit, label}) => (
+    <div style={{padding:"8px 20px 12px",borderTop:`1px solid ${C.border}`}}>
+      <div style={{fontSize:11,color:C.muted,marginBottom:6}}>{label}</div>
+      <div style={{display:"flex",gap:6}}>
+        <input
+          type="password" value={pw} autoFocus
+          onChange={e=>{setPw(e.target.value);setPwErr(false);}}
+          onKeyDown={e=>e.key==="Enter"&&onSubmit()}
+          placeholder="Password"
+          style={{flex:1,padding:"7px 10px",borderRadius:R2,border:`1px solid ${pwErr?C.red:C.border}`,fontSize:13,color:C.text,background:C.bg,outline:"none"}}
+        />
+        <button onClick={onSubmit} style={{padding:"7px 14px",borderRadius:R2,border:"none",background:C.gold,color:"#000",fontSize:13,fontWeight:700,cursor:"pointer"}}>→</button>
+        <button onClick={()=>{closeAll();setPw("");}} style={{padding:"7px 10px",borderRadius:R2,border:`1px solid ${C.border}`,background:"none",color:C.muted,fontSize:13,cursor:"pointer"}}>✕</button>
+      </div>
+      {pwErr && <div style={{fontSize:11,color:C.red,marginTop:4}}>Incorrect password.</div>}
+    </div>
+  );
+
   return (
     <>
-      {open && <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:100}}/>}
+      {open && <div onClick={()=>{closeAll();onClose();}} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:100}}/>}
       <div style={{position:"fixed",top:0,left:0,bottom:0,width:270,background:C.navy,zIndex:101,
         transform:open?"translateX(0)":"translateX(-100%)",transition:"transform 0.26s cubic-bezier(0.4,0,0.2,1)",
         overflowY:"auto",boxShadow:"2px 0 24px rgba(0,0,0,0.5)"}}>
@@ -566,7 +602,7 @@ function Drawer({open,onClose,setTab,refMode,setRefMode,setEditId}) {
               <div style={{fontSize:10,color:C.muted}}>2025 Spring Season</div>
             </div>
           </div>
-          <button onClick={onClose} style={{width:30,height:30,borderRadius:"50%",background:`${C.border}`,border:"none",color:C.muted,fontSize:16,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+          <button onClick={()=>{closeAll();onClose();}} style={{width:30,height:30,borderRadius:"50%",background:`${C.border}`,border:"none",color:C.muted,fontSize:16,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
         </div>
         <div style={{padding:"8px 0"}}>
           {items.map((item,i) => (
@@ -577,23 +613,56 @@ function Drawer({open,onClose,setTab,refMode,setRefMode,setEditId}) {
             </button>
           ))}
         </div>
+
         <div style={{margin:"4px 20px",borderTop:`1px solid ${C.border}`}}/>
-        <button onClick={()=>{setRefMode(r=>!r);setEditId(null);onClose();}} style={{width:"100%",background:"none",border:"none",padding:"11px 20px",
-          display:"flex",alignItems:"center",gap:14,cursor:"pointer",textAlign:"left"}}>
-          <span style={{fontSize:17,width:24,textAlign:"center",opacity:0.6}}>⚙️</span>
-          <div>
-            <div style={{fontSize:14,fontWeight:500,color:refMode?C.gold:C.text}}>Ref Edit Mode</div>
-            <div style={{fontSize:11,color:refMode?C.gold:C.muted,marginTop:1}}>{refMode?"On — tap to disable":"Off — tap to enable"}</div>
-          </div>
-        </button>
-        <button onClick={()=>{nav("admin");}} style={{width:"100%",background:"none",border:"none",padding:"11px 20px",
-          display:"flex",alignItems:"center",gap:14,cursor:"pointer",textAlign:"left"}}>
-          <span style={{fontSize:17,width:24,textAlign:"center",opacity:0.6}}>🔐</span>
-          <div>
-            <div style={{fontSize:14,fontWeight:500,color:C.text}}>Admin Mode</div>
-            <div style={{fontSize:11,color:C.muted,marginTop:1}}>Edit announcements, scores, teams</div>
-          </div>
-        </button>
+
+        {/* Ref Mode */}
+        {refMode
+          ? <button onClick={()=>{disableRef();setEditId(null);onClose();}} style={{width:"100%",background:"none",border:"none",padding:"11px 20px",display:"flex",alignItems:"center",gap:14,cursor:"pointer",textAlign:"left"}}>
+              <span style={{fontSize:17,width:24,textAlign:"center",opacity:0.6}}>🟢</span>
+              <div>
+                <div style={{fontSize:14,fontWeight:500,color:C.gold}}>Ref Mode — On</div>
+                <div style={{fontSize:11,color:C.muted,marginTop:1}}>Tap to disable</div>
+              </div>
+            </button>
+          : <>
+              <button onClick={()=>{setShowAdminPw(false);setPw("");setPwErr(false);setShowRefPw(s=>!s);}} style={{width:"100%",background:"none",border:"none",padding:"11px 20px",display:"flex",alignItems:"center",gap:14,cursor:"pointer",textAlign:"left"}}>
+                <span style={{fontSize:17,width:24,textAlign:"center",opacity:0.6}}>🔴</span>
+                <div>
+                  <div style={{fontSize:14,fontWeight:500,color:C.text}}>Ref Mode — Off</div>
+                  <div style={{fontSize:11,color:C.muted,marginTop:1}}>Score editing only</div>
+                </div>
+              </button>
+              {showRefPw && <PwInput label="Enter Ref password:" onSubmit={tryRef}/>}
+            </>
+        }
+
+        {/* Admin Mode */}
+        {adminMode
+          ? <button onClick={()=>{disableAdmin();onClose();}} style={{width:"100%",background:"none",border:"none",padding:"11px 20px",display:"flex",alignItems:"center",gap:14,cursor:"pointer",textAlign:"left"}}>
+              <span style={{fontSize:17,width:24,textAlign:"center",opacity:0.6}}>🔐</span>
+              <div>
+                <div style={{fontSize:14,fontWeight:500,color:C.gold}}>Admin Mode — Active</div>
+                <div style={{fontSize:11,color:C.muted,marginTop:1}}>Tap to log out</div>
+              </div>
+            </button>
+          : <>
+              <button onClick={()=>{setShowRefPw(false);setPw("");setPwErr(false);setShowAdminPw(s=>!s);}} style={{width:"100%",background:"none",border:"none",padding:"11px 20px",display:"flex",alignItems:"center",gap:14,cursor:"pointer",textAlign:"left"}}>
+                <span style={{fontSize:17,width:24,textAlign:"center",opacity:0.6}}>🔐</span>
+                <div>
+                  <div style={{fontSize:14,fontWeight:500,color:C.text}}>Admin Mode</div>
+                  <div style={{fontSize:11,color:C.muted,marginTop:1}}>Full league management</div>
+                </div>
+              </button>
+              {showAdminPw && <PwInput label="Enter Admin password:" onSubmit={tryAdmin}/>}
+            </>
+        }
+        {adminMode && (
+          <button onClick={()=>nav("admin")} style={{width:"100%",background:"none",border:"none",padding:"9px 20px 11px 54px",display:"flex",alignItems:"center",gap:14,cursor:"pointer",textAlign:"left"}}>
+            <span style={{fontSize:13,color:C.gold}}>→ Open Admin Dashboard</span>
+          </button>
+        )}
+
         <div style={{margin:"4px 20px",borderTop:`1px solid ${C.border}`}}/>
         <button onClick={()=>nav("about")} style={{width:"100%",background:"none",border:"none",padding:"11px 20px",
           display:"flex",alignItems:"center",gap:14,cursor:"pointer",textAlign:"left"}}>
@@ -608,10 +677,10 @@ function Drawer({open,onClose,setTab,refMode,setRefMode,setEditId}) {
 
 // ─── Home Screen ──────────────────────────────────────────────────────────────
 const NAV_CARDS = [
-  {id:"schedule", label:"Schedule",   sub:"Games & courts",   img:"https://images.unsplash.com/photo-1612872087720-bb876e2e67d1?w=600&q=70&fit=crop"},
-  {id:"teams",    label:"Teams",      sub:"Rosters & captains",img:"https://images.unsplash.com/photo-1560012057-4372e14c5085?w=600&q=70&fit=crop"},
-  {id:"teams",    label:"Standings",  sub:"Rankings & records",img:"https://images.unsplash.com/photo-1592656094267-764a45160876?w=600&q=70&fit=crop"},
-  {id:"bracket",  label:"Tournament", sub:"Brackets & scores", img:"https://images.unsplash.com/photo-1547347298-4074fc3086f0?w=600&q=70&fit=crop"},
+  {id:"schedule", label:"Schedule",   sub:"Games & courts",    img:"https://images.unsplash.com/photo-1506784983877-45594efa4cbe?w=600&q=70&fit=crop&crop=center"},
+  {id:"teams",    label:"Teams",      sub:"Rosters & captains", img:"https://images.unsplash.com/photo-1612872087720-bb876e2e67d1?w=600&q=70&fit=crop"},
+  {id:"teams",    label:"Standings",  sub:"Rankings & records", img:"https://images.unsplash.com/photo-1592656094267-764a45160876?w=600&q=70&fit=crop"},
+  {id:"bracket",  label:"Tournament", sub:"Brackets & scores",  img:"https://images.unsplash.com/photo-1567427017947-545c5f8d16ad?w=600&q=70&fit=crop&crop=center"},
 ];
 
 function HomeScreen({setTab,info,profile,games,teams}) {
@@ -1633,34 +1702,21 @@ function ProfileScreen({profile,setProfile,teams,games,standings,setTab}) {
   );
 }
 // ─── Admin Screen ─────────────────────────────────────────────────────────────
-const ADMIN_PW = "fairplayadmin";
+const ADMIN_PW = "fairplayadmin"; // kept for reference
 
-function AdminScreen({ games, setGames, teams, setTeams, info, setInfo, bracket, setBracket }) {
-  const [authed,   setAuthed]   = useState(false);
-  const [pw,       setPw]       = useState("");
-  const [pwErr,    setPwErr]    = useState(false);
-  const [section,  setSection]  = useState(null); // "announcements"|"scores"|"schedule"|"teams"|"bracket"
+function AdminScreen({ games, setGames, teams, setTeams, info, setInfo, bracket, setBracket, adminMode }) {
+  const [section,  setSection]  = useState(null);
 
-  // ── Password gate ──────────────────────────────────────────────────────────
-  if (!authed) {
+  if (!adminMode) {
     return (
-      <div style={{paddingBottom:28}}>
-        <div style={{textAlign:"center",padding:"32px 0 24px"}}>
-          <div style={{fontSize:22,fontWeight:700,color:C.text,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"1px",marginBottom:6}}>Admin Access</div>
-          <div style={{fontSize:13,color:C.muted}}>Enter the admin password to continue.</div>
-        </div>
-        <input type="password" value={pw} onChange={e=>{setPw(e.target.value);setPwErr(false);}}
-          onKeyDown={e=>{if(e.key==="Enter"){if(pw===ADMIN_PW){setAuthed(true);}else setPwErr(true);}}}
-          placeholder="Password"
-          style={{width:"100%",padding:"13px 16px",borderRadius:12,border:`1px solid ${pwErr?"#f87171":C.border}`,fontSize:15,color:C.text,background:C.surf,boxSizing:"border-box",outline:"none",marginBottom:10,textAlign:"center"}}/>
-        {pwErr && <div style={{fontSize:12,color:"#f87171",textAlign:"center",marginBottom:10}}>Incorrect password.</div>}
-        <button onClick={()=>{if(pw===ADMIN_PW){setAuthed(true);}else setPwErr(true);}}
-          style={{width:"100%",padding:"14px",borderRadius:12,border:"none",background:C.gold,color:"#000",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"1px",textTransform:"uppercase"}}>
-          Enter
-        </button>
+      <div style={{paddingBottom:28,textAlign:"center",paddingTop:32}}>
+        <div style={{fontSize:32,marginBottom:12}}>🔐</div>
+        <div style={{fontSize:16,fontWeight:700,color:C.text,fontFamily:"'Barlow Condensed',sans-serif",marginBottom:8}}>Admin Access Required</div>
+        <div style={{fontSize:13,color:C.muted}}>Enable Admin Mode from the side menu to access this dashboard.</div>
       </div>
     );
   }
+
 
   // ── Section picker ─────────────────────────────────────────────────────────
   const sections = [
@@ -2910,7 +2966,8 @@ function AppInner() {
   const [games,   setGames]   = useState(GAMES_INIT);
   const [teams,   setTeams]   = useState(TEAMS_INIT);
   const [info,    setInfo]    = useState(INFO_INIT);
-  const [refMode, setRefMode] = useState(false);
+  const [refMode,   setRefMode]   = useState(() => sessionStorage.getItem("fp_ref") === "1");
+  const [adminMode, setAdminMode] = useState(() => sessionStorage.getItem("fp_admin") === "1");
   const [editId,  setEditId]  = useState(null);
   const [profile, setProfile] = useState(null);
   const [bracket, setBracket] = useState(BRACKET_INIT);
@@ -2937,22 +2994,30 @@ function AppInner() {
     if (Array.isArray(br) && br.length > 0) setBracket(br);
   }, []);
 
+  const enableRef   = () => { setRefMode(true);  try { sessionStorage.setItem("fp_ref","1");   } catch(e){} };
+  const disableRef  = () => { setRefMode(false); try { sessionStorage.removeItem("fp_ref");    } catch(e){} setEditId(null); };
+  const enableAdmin = () => { setAdminMode(true); try { sessionStorage.setItem("fp_admin","1"); } catch(e){} };
+  const disableAdmin= () => { setAdminMode(false);try { sessionStorage.removeItem("fp_admin"); } catch(e){} };
+
   const updateGame = (id,u) => { setGames(p=>p.map(g=>g.id===id?{...g,...u}:g)); setEditId(null); };
   const updateTeam = (id,u) => setTeams(p=>p.map(t=>t.id===id?{...t,...u}:t));
   const updateInfo = (key,val) => setInfo(p=>({...p,[key]:val}));
   const standings  = calcStandings(games, teams);
   const myTeamIds = profile?.teamIds || (profile?.teamId ? [profile.teamId] : []);
-  const gp         = {games,teams,refMode,editId,setEditId,updateGame,myTeamIds};
+  // refMode = score editing only; adminMode = full editing; either enables game card edit
+  const canEditScores = refMode || adminMode;
+  const canEditAll    = adminMode;
+  const gp         = {games,teams,refMode:canEditScores,editId,setEditId,updateGame,myTeamIds};
   const isHome     = tab === "home";
 
   const screens = {
     schedule:      <ScheduleTab {...gp}/>,
-    teams:         <TeamsStandingsTab standings={standings} refMode={refMode} updateTeam={updateTeam} myTeamIds={myTeamIds}/>,
+    teams:         <TeamsStandingsTab standings={standings} refMode={canEditAll} updateTeam={updateTeam} myTeamIds={myTeamIds}/>,
     bracket:       <BracketTab teams={teams} myTeamIds={myTeamIds} bracket={bracket} updateBracket={updateBracket}/>,
-    info:          <InfoTab info={info} updateInfo={updateInfo} refMode={refMode}/>,
+    info:          <InfoTab info={info} updateInfo={updateInfo} refMode={canEditAll}/>,
     announcements: <AnnouncementsTab announcements={info.announcements}/>,
     me:            <ProfileScreen profile={profile} setProfile={setProfile} teams={teams} games={games} standings={standings} setTab={setTab}/>,
-    admin:         <AdminScreen games={games} setGames={setGames} teams={teams} setTeams={setTeams} info={info} setInfo={setInfo} bracket={bracket} setBracket={setBracket}/>,
+    admin:         <AdminScreen games={games} setGames={setGames} teams={teams} setTeams={setTeams} info={info} setInfo={setInfo} bracket={bracket} setBracket={setBracket} adminMode={adminMode}/>,
     subs:          <SubsBoard profile={profile} teams={teams}/>,
     about:         <AboutScreen/>,
   };
@@ -2969,7 +3034,11 @@ function AppInner() {
         scrollbar-width:none;
       `}</style>
 
-      <Drawer open={drawer} onClose={()=>setDrawer(false)} setTab={setTab} refMode={refMode} setRefMode={setRefMode} setEditId={setEditId}/>
+      <Drawer open={drawer} onClose={()=>setDrawer(false)} setTab={setTab}
+        refMode={refMode} adminMode={adminMode}
+        enableRef={enableRef} disableRef={disableRef}
+        enableAdmin={enableAdmin} disableAdmin={disableAdmin}
+        setEditId={setEditId}/>
 
       <div style={{fontFamily:"'DM Sans',system-ui,sans-serif",background:C.bg,width:"100%",height:"100dvh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
 
@@ -3013,8 +3082,11 @@ function AppInner() {
           </button>
         </div>
 
-        {refMode&&<div style={{background:"#1a1000",borderBottom:`1px solid ${C.gold}33`,padding:"8px 16px",fontSize:12,color:C.gold,fontWeight:500,flexShrink:0,display:"flex",alignItems:"center",gap:8}}>
-          <span>✏️</span> Admin mode — tap Edit on games, teams, bracket, or info
+        {refMode&&!adminMode&&<div style={{background:"#001a0d",borderBottom:`1px solid ${C.green}33`,padding:"7px 16px",fontSize:12,color:"#4ade80",fontWeight:500,flexShrink:0,display:"flex",alignItems:"center",gap:8}}>
+          <span>🟢</span> Ref Mode — score editing enabled
+        </div>}
+        {adminMode&&<div style={{background:"#1a1000",borderBottom:`1px solid ${C.gold}33`,padding:"7px 16px",fontSize:12,color:C.gold,fontWeight:500,flexShrink:0,display:"flex",alignItems:"center",gap:8}}>
+          <span>🔐</span> Admin Mode — full editing enabled
         </div>}
 
         {/* Content */}
