@@ -2256,34 +2256,30 @@ function parseFairplayPDF(rawItems, teams) {
   const WEEK_RE  = /week\s*(\d+)/i;
   const YEAR_RE  = /\b(20\d{2})\b/;
   const MONTH_MAP = {
-    jan:1,feb:2,mar:3,apr:4,may:5,jun:6,
-    jul:7,aug:8,sep:9,oct:10,nov:11,dec:12,
-    january:1,february:2,march:3,april:4,june:6,
-    july:7,august:8,september:9,october:10,november:11,december:12,
+    jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12,
+    january:1,february:2,march:3,april:4,june:6,july:7,august:8,
+    september:9,october:10,november:11,december:12,
   };
 
-  const items = rawItems.filter(i => i.text.length > 0);
+  const items    = rawItems.filter(i => i.text.length > 0);
   const fullText = items.map(i => i.text).join(" ");
 
-  // ── Detect year from PDF text (e.g. "Summer 1, 2026") ────────────────
+  // ── Detect year ─────────────────────────────────────────────────────────
   const yearMatch = fullText.match(YEAR_RE);
-  const year = yearMatch ? parseInt(yearMatch[1]) : new Date().getFullYear();
+  const year      = yearMatch ? parseInt(yearMatch[1]) : new Date().getFullYear();
 
-  // ── Convert "April 29th" → "2026-04-29" ──────────────────────────────
+  // ── ISO date helper ──────────────────────────────────────────────────────
   const toISO = (raw) => {
     if (!raw) return "";
-    // strip ordinal suffix
     const clean = raw.replace(/(st|nd|rd|th)\b/i,"").trim();
     const m = clean.match(/((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?)\s+(\d{1,2})/i);
     if (!m) return "";
-    const monthKey = m[1].toLowerCase().replace(/\.$/,"").slice(0,3);
-    const month = MONTH_MAP[monthKey] || MONTH_MAP[m[1].toLowerCase().replace(/\.$/,"")];
+    const key   = m[1].toLowerCase().replace(/\.$/,"");
+    const month = MONTH_MAP[key] || MONTH_MAP[key.slice(0,3)];
     if (!month) return "";
     const day = parseInt(m[2]);
     return `${year}-${String(month).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
   };
-
-  // Derive day string from ISO
   const dayFromISO = (iso) => {
     if (!iso) return "";
     try {
@@ -2292,40 +2288,39 @@ function parseFairplayPDF(rawItems, teams) {
     } catch(e){ return ""; }
   };
 
-  // Normalise time → "5:55 PM"
-  const normalizeTime = (base, ampm) => {
-    const suffix = ampm ? ampm.toUpperCase() : "PM";
-    return `${base} ${suffix}`;
-  };
-
-  // ── Categorise items ──────────────────────────────────────────────────
+  // ── Categorise items ─────────────────────────────────────────────────────
   const matchItems = [];
   const timeItems  = [];
-  const dateItems  = [];
-  const weekItems  = [];
+  const dateItems  = [];   // {item, iso}
+  const weekItems  = [];   // {item, weekNum}
 
   items.forEach(item => {
     const t = item.text.trim();
     if (MATCH_RE.test(t)) { matchItems.push(item); return; }
     const tm = t.match(TIME_RE);
-    if (tm) { timeItems.push({...item, timeStr: normalizeTime(tm[1], tm[2])}); return; }
-    if (WEEK_RE.test(t)) { weekItems.push(item); return; }
+    if (tm) {
+      const suffix = tm[2] ? tm[2].toUpperCase() : "PM";
+      timeItems.push({...item, timeStr:`${tm[1]} ${suffix}`});
+      return;
+    }
+    const wm = t.match(WEEK_RE);
+    if (wm) { weekItems.push({...item, weekNum:parseInt(wm[1])}); return; }
     const dm = t.match(DATE_RE);
     if (dm) {
       const iso = toISO(dm[1]);
-      if (iso) dateItems.push({...item, iso, dayStr: dayFromISO(iso)});
+      if (iso) dateItems.push({...item, iso});
     }
   });
 
   if (matchItems.length === 0) {
-    return {games:[], warnings:["No match cells found. Try Manual Paste Import."],
-      debugInfo:{timeItems:[],courtItems:COURTS,dateItems:[],weekItems:[],matchCount:0,columns:[]}};
+    return {games:[], warnings:["No match cells found (e.g. '38 vs 43'). Try Manual Paste Import."],
+      debugInfo:{year,timeItems:[],courtItems:COURTS,dateItems:[],weekItems:[],matchCount:0,columns:[]}};
   }
 
-  // ── Sort times left→right ─────────────────────────────────────────────
+  // ── Sort times left→right (by X) → this is the authoritative time order ──
   const sortedTimes = [...timeItems].sort((a,b) => a.x - b.x);
 
-  // ── Cluster match cells into X-columns (20px tolerance) ──────────────
+  // ── Cluster match cells into X-columns ───────────────────────────────────
   const sortedMatches = [...matchItems].sort((a,b) => a.x !== b.x ? a.x - b.x : a.y - b.y);
   const columns = [];
   sortedMatches.forEach(item => {
@@ -2336,42 +2331,53 @@ function parseFairplayPDF(rawItems, teams) {
   columns.forEach(c => c.items.sort((a,b) => a.y - b.y));
   columns.sort((a,b) => a.x - b.x);
 
-  // ── Assign time by closest X ──────────────────────────────────────────
-  const assignTime = (colX) => {
-    if (!sortedTimes.length) return "";
-    return sortedTimes.reduce((best,t) =>
-      Math.abs(t.x - colX) < Math.abs(best.x - colX) ? t : best
-    ).timeStr;
+  // ── FIX 2: Time assignment — column index maps directly to time index ─────
+  // Column 0 → sortedTimes[0], column 1 → sortedTimes[1], etc.
+  // This is deterministic and skips no columns.
+  const timeForColumn = (colIdx) => sortedTimes[colIdx]?.timeStr || "";
+
+  // ── FIX 1: Date assignment — use week block bounding boxes ───────────────
+  // Each week block is bounded by its week header Y and the next week header Y.
+  // All match cells whose Y falls within a week block inherit that block's date.
+  //
+  // Build week blocks: [{weekNum, startY, endY, iso}]
+  const sortedWeeks = [...weekItems].sort((a,b) => a.y - b.y);
+  const weekBlocks  = sortedWeeks.map((wk, i) => {
+    const startY = wk.y;
+    const endY   = sortedWeeks[i+1] ? sortedWeeks[i+1].y : Infinity;
+    // Find date items whose Y is between startY and endY (or within 60px below startY)
+    const matchingDates = dateItems.filter(d => d.y >= startY - 20 && d.y <= endY + 20);
+    const iso = matchingDates.length > 0 ? matchingDates[0].iso : "";
+    return {weekNum: wk.weekNum, startY, endY, iso};
+  });
+
+  // Fallback: if we have dates but no week blocks, assign dates by Y proximity
+  const isoForMatchY = (matchY) => {
+    if (weekBlocks.length > 0) {
+      // Find which week block this match Y falls in
+      const block = weekBlocks.find(b => matchY >= b.startY - 20 && matchY <= b.endY + 20);
+      if (block?.iso) return {iso: block.iso, weekNum: block.weekNum};
+      // Nearest block above
+      const above = weekBlocks.filter(b => b.startY <= matchY + 20);
+      if (above.length) {
+        const best = above[above.length - 1]; // last one above
+        return {iso: best.iso, weekNum: best.weekNum};
+      }
+    }
+    // No week blocks — use nearest date item above
+    const above = dateItems.filter(d => d.y <= matchY + 40);
+    if (!above.length) return {iso:"", weekNum:1};
+    const best = above.reduce((b,d) => Math.abs(d.y-matchY) < Math.abs(b.y-matchY) ? d : b);
+    return {iso: best.iso, weekNum: 1};
   };
 
-  // ── Assign date by closest Y above ───────────────────────────────────
-  const assignDate = (colY) => {
-    const above = dateItems.filter(d => d.y <= colY + 40);
-    if (!above.length) return {iso:"", dayStr:""};
-    const best = above.reduce((b,d) => Math.abs(d.y-colY) < Math.abs(b.y-colY) ? d : b);
-    return {iso: best.iso, dayStr: best.dayStr};
-  };
-
-  const assignWeek = (colY) => {
-    const above = weekItems.filter(w => w.y <= colY + 40);
-    if (!above.length) return 1;
-    const best = above.reduce((b,w) => Math.abs(w.y-colY)<Math.abs(b.y-colY)?w:b);
-    const wm = best.text.match(WEEK_RE);
-    return wm ? parseInt(wm[1]) : 1;
-  };
-
-  // ── Build games ───────────────────────────────────────────────────────
-  const results = [];
+  // ── Build games ───────────────────────────────────────────────────────────
+  const results  = [];
   const warnings = [];
 
-  columns.forEach(col => {
-    const time = assignTime(col.x);
-    const firstY = col.items[0]?.y ?? 0;
-    const {iso: dateISO, dayStr} = assignDate(firstY);
-    const week = assignWeek(firstY);
-
-    if (!time)    warnings.push(`Column x≈${Math.round(col.x)}: no time matched`);
-    if (!dateISO) warnings.push(`Column x≈${Math.round(col.x)}: no date detected (year=${year})`);
+  columns.forEach((col, colIdx) => {
+    const time = timeForColumn(colIdx);
+    if (!time) warnings.push(`Column ${colIdx+1} (x≈${Math.round(col.x)}): no time header — check time detection`);
 
     col.items.forEach((item, rowIdx) => {
       const court = COURTS[rowIdx % COURTS.length];
@@ -2381,15 +2387,18 @@ function parseFairplayPDF(rawItems, teams) {
       const awayId = parseInt(m[2]);
       const homeTeam = teams.find(t => t.id === homeId);
       const awayTeam = teams.find(t => t.id === awayId);
+      const {iso: dateISO, weekNum} = isoForMatchY(item.y);
       const w = [];
       if (!homeTeam) w.push(`#${homeId} not in app team list`);
       if (!awayTeam) w.push(`#${awayId} not in app team list`);
+      if (!dateISO)  w.push("Date not detected — please set manually");
+      if (!time)     w.push("Time not detected — please set manually");
 
       results.push({
         game:{
           id:     Date.now() + results.length,
-          day:    dayStr,
-          date:   dateISO,   // ← ISO format for date input
+          day:    dayFromISO(dateISO),
+          date:   dateISO,
           time:   time || "",
           court,
           home:   homeId,
@@ -2397,10 +2406,9 @@ function parseFairplayPDF(rawItems, teams) {
           status: "Upcoming",
           hs:     null,
           as_:    null,
-          _week:  week,
+          _week:  weekNum || 1,
         },
         homeTeam, awayTeam, warnings: w,
-        // display-friendly labels
         _homeName: homeTeam?.name || `Team #${homeId}`,
         _awayName: awayTeam?.name || `Team #${awayId}`,
       });
@@ -2409,18 +2417,20 @@ function parseFairplayPDF(rawItems, teams) {
 
   const debugInfo = {
     year,
-    timeItems:  sortedTimes.map(t=>`${t.timeStr}@x${Math.round(t.x)}`),
+    timeItems:  sortedTimes.map((t,i)=>`[${i}] ${t.timeStr}@x${Math.round(t.x)}`),
     courtItems: COURTS,
     dateItems:  dateItems.map(d=>`${d.iso}@(${Math.round(d.x)},${Math.round(d.y)})`),
-    weekItems:  weekItems.map(w=>`${w.text}@y${Math.round(w.y)}`),
+    weekItems:  weekItems.map(w=>`Week ${w.weekNum}@y${Math.round(w.y)}`),
+    weekBlocks: weekBlocks.map(b=>`Week${b.weekNum} y${Math.round(b.startY)}-${b.endY===Infinity?"∞":Math.round(b.endY)} → ${b.iso}`),
     matchCount: matchItems.length,
-    columns:    columns.map(c=>`x≈${Math.round(c.x)}[${c.items.length}]`),
+    columns:    columns.map((c,i)=>`col${i} x≈${Math.round(c.x)} [${c.items.length}] → time:${sortedTimes[i]?.timeStr||"?"}`),
   };
 
   return {games: results, warnings, debugInfo};
 }
 
 const MATCH_RE_CHECK = (s) => /\d{2,3}\s*vs\.?\s*\d{2,3}/i.test(s);
+
 
 
 
