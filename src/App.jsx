@@ -2249,169 +2249,175 @@ function clusterValues(vals, tol) {
 }
 
 function parseFairplayPDF(rawItems, teams) {
-  // ── helpers ──────────────────────────────────────────────────────────────
+  /*
+   * Fair Play Grid Parser — structural approach
+   * Layout per week block:
+   *   - Date string on the far left (e.g. "April 29th")
+   *   - Time headers in a top row, left→right (e.g. 5:30 5:55 6:15 ...)
+   *   - 5 court rows below each time column: Near, Mid, Far, #4, #5
+   *   - Match cells are in column-major order: all Near/Mid/Far/#4/#5 for
+   *     time-col-0, then all for time-col-1, etc.
+   *
+   * Strategy:
+   *   1. Separate items into: matchups | times | dates | week-headers | courts
+   *   2. Sort time headers left→right by X → ordered list of time strings
+   *   3. Sort match cells by X (column), then Y (row within column)
+   *   4. Each group of 5 consecutive match cells (by X cluster) = one time slot,
+   *      courts assigned by position within group: [Near, Mid, Far, #4, #5]
+   *   5. Date = nearest date text above/left of the match column
+   */
+
+  const COURTS   = ["Near", "Mid", "Far", "#4", "#5"];
   const MATCH_RE = /^#?(\d{2,3})\s*vs\.?\s*#?(\d{2,3})$/i;
-  // Times with or without AM/PM: "5:30", "6:00 PM", "7:30pm", "5:55"
+  // Times with or without AM/PM, including short formats: 5:30, 5:55, 6:15
   const TIME_RE  = /^(\d{1,2}:\d{2})\s*(AM|PM)?$/i;
-  // Courts
-  const COURT_RE = /^(near|mid|far|#?[45]|court\s*\d)$/i;
-  // Dates: "April 29th", "May 6", "April 29", "Monday April 29"
-  const DATE_RE  = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(st|nd|rd|th)?/i;
+  // Ordinal dates: "April 29th", "April 29", "May 6"
+  const DATE_RE  = /((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?)/i;
   const WEEK_RE  = /week\s*(\d+)/i;
-  const DAY_RE   = /^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i;
 
   const items = rawItems.filter(i => i.text.length > 0);
 
-  // normalise time string → "6:00 PM" format
-  const normalizeTime = (base, ampm) => {
-    if (ampm) return `${base} ${ampm.toUpperCase()}`;
-    // Guess AM/PM: 5:xx–11:xx → PM for league context
-    const h = parseInt(base.split(":")[0]);
-    return `${base} ${h < 5 || h === 12 ? "PM" : "PM"}`; // default PM for evening leagues
-  };
-
-  // derive day-of-week from a date string
-  const dayFromDate = (str) => {
-    try {
-      const d = new Date(str.replace(/(st|nd|rd|th)/i,"") + " 2025");
-      if (!isNaN(d)) return d.toLocaleDateString("en-US",{weekday:"short"});
-    } catch(e){}
-    return "";
-  };
-
-  // ── categorize every item ─────────────────────────────────────────────────
+  // ── 1. Categorise items ────────────────────────────────────────────────
+  const matchItems = [];
   const timeItems  = [];
-  const courtItems = [];
   const dateItems  = [];
   const weekItems  = [];
-  const matchItems = [];
-  const otherItems = [];
 
   items.forEach(item => {
     const t = item.text.trim();
-    if (MATCH_RE.test(t))  { matchItems.push(item); return; }
+    if (MATCH_RE.test(t)) { matchItems.push(item); return; }
     const tm = t.match(TIME_RE);
-    if (tm)                { timeItems.push({...item, timeStr: normalizeTime(tm[1], tm[2])}); return; }
-    if (COURT_RE.test(t))  { courtItems.push(item); return; }
-    if (WEEK_RE.test(t))   { weekItems.push(item); return; }
+    if (tm) {
+      // Normalise: add PM if missing (Fairplay leagues run evenings)
+      const base = tm[1], ampm = tm[2] ? tm[2].toUpperCase() : "PM";
+      timeItems.push({...item, timeStr: `${base} ${ampm}`});
+      return;
+    }
+    if (WEEK_RE.test(t)) { weekItems.push(item); return; }
     const dm = t.match(DATE_RE);
-    if (dm)                { dateItems.push({...item, dateStr: `${dm[1].charAt(0).toUpperCase()+dm[1].slice(1).toLowerCase()} ${dm[2]}`}); return; }
-    // Day-of-week alone is not enough but capture with surrounding date items
-    otherItems.push(item);
+    if (dm) {
+      const clean = dm[1].replace(/(st|nd|rd|th)$/i,"").trim();
+      // Capitalise month
+      const dateStr = clean.charAt(0).toUpperCase() + clean.slice(1).toLowerCase();
+      // Derive day
+      let dayStr = "";
+      try {
+        const d = new Date(dateStr + " 2025");
+        if (!isNaN(d)) dayStr = d.toLocaleDateString("en-US",{weekday:"short"});
+      } catch(e){}
+      dateItems.push({...item, dateStr, dayStr});
+    }
   });
 
-  // ── for each match cell, find nearest time / court / date ─────────────────
-  // "nearest" = minimum distance on the relevant axis, constrained to correct side
+  if (matchItems.length === 0) {
+    return {games:[], warnings:["No match cells found (e.g. '38 vs 43'). Try Manual Paste Import."], debugInfo:{timeItems:[],courtItems:[],dateItems:[],weekItems:[],matchCount:0}};
+  }
 
-  const nearestTimeForMatch = (m) => {
-    // Time headers are above the match cell (smaller Y) or at same Y
-    // Best: same column (closest X), row above
-    const candidates = timeItems.filter(t => t.y <= m.y + 10); // at or above
-    if (!candidates.length) return null;
-    // Find closest X match
-    return candidates.reduce((best, t) =>
-      Math.abs(t.x - m.x) < Math.abs(best.x - m.x) ? t : best
-    );
+  // ── 2. Sort time headers left→right by X ──────────────────────────────
+  const sortedTimes = [...timeItems].sort((a,b) => a.x - b.x);
+
+  // ── 3. Cluster match cells into columns by X position ─────────────────
+  // Two match cells are in the same column if their X values are within 20px
+  const sortedMatches = [...matchItems].sort((a,b) => a.x !== b.x ? a.x - b.x : a.y - b.y);
+
+  const columns = []; // each column = array of match items (sorted by Y)
+  sortedMatches.forEach(item => {
+    const col = columns.find(c => Math.abs(c.x - item.x) <= 20);
+    if (col) { col.items.push(item); col.x = (col.x * col.items.length + item.x) / (col.items.length + 1); }
+    else columns.push({x: item.x, items: [item]});
+  });
+  // Sort items within each column by Y (top→bottom)
+  columns.forEach(c => { c.items.sort((a,b) => a.y - b.y); });
+  // Sort columns left→right
+  columns.sort((a,b) => a.x - b.x);
+
+  // ── 4. Assign time to each column ─────────────────────────────────────
+  // Match each column to the time header with the closest X
+  const assignTime = (colX) => {
+    if (sortedTimes.length === 0) return "";
+    return sortedTimes.reduce((best, t) =>
+      Math.abs(t.x - colX) < Math.abs(best.x - colX) ? t : best
+    ).timeStr;
   };
 
-  const nearestCourtForMatch = (m) => {
-    // Court labels are to the left of the match cell (smaller X), same Y band
-    const candidates = courtItems.filter(c => c.x <= m.x + 20);
-    if (!candidates.length) return null;
-    // Find closest Y
-    return candidates.reduce((best, c) =>
-      Math.abs(c.y - m.y) < Math.abs(best.y - m.y) ? c : best
-    );
+  // ── 5. Assign date per column ─────────────────────────────────────────
+  // Find the date whose Y is above (or close to) the column's first match Y
+  const assignDate = (colX, colY) => {
+    const candidates = dateItems.filter(d => d.y <= colY + 30);
+    if (!candidates.length) return {dateStr:"", dayStr:""};
+    // Closest Y above the column
+    const best = candidates.reduce((b,d) => (colY - d.y) < (colY - b.y) && (colY - d.y) >= 0 ? d : b, candidates[0]);
+    return {dateStr: best.dateStr, dayStr: best.dayStr};
   };
 
-  const nearestDateForMatch = (m) => {
-    // Dates are above or to the left, typically on the left side of the page
-    const candidates = dateItems.filter(d => d.y <= m.y + 30); // at or above
-    if (!candidates.length) return null;
-    // Prefer closest Y (most recent date block above this row)
-    return candidates.reduce((best, d) =>
-      Math.abs(d.y - m.y) < Math.abs(best.y - m.y) ? d : best
-    );
-  };
-
-  const nearestWeekForMatch = (m) => {
-    const candidates = weekItems.filter(w => w.y <= m.y + 10);
+  const assignWeek = (colY) => {
+    const candidates = weekItems.filter(w => w.y <= colY + 30);
     if (!candidates.length) return 1;
-    const best = candidates.reduce((b,w) => w.y > b.y ? w : b);
+    const best = candidates.reduce((b,w) => (colY - w.y) < (colY - b.y) ? w : b, candidates[0]);
     const wm = best.text.match(WEEK_RE);
     return wm ? parseInt(wm[1]) : 1;
   };
 
-  // ── build results ─────────────────────────────────────────────────────────
-  const results = [];
+  // ── 6. Build game objects ──────────────────────────────────────────────
+  const results  = [];
   const warnings = [];
 
-  matchItems.forEach((item, idx) => {
-    const m = item.text.match(MATCH_RE);
-    if (!m) return;
-    const homeId = parseInt(m[1]);
-    const awayId = parseInt(m[2]);
+  columns.forEach(col => {
+    const time  = assignTime(col.x);
+    const firstY = col.items[0]?.y ?? 0;
+    const {dateStr, dayStr} = assignDate(col.x, firstY);
+    const week  = assignWeek(firstY);
 
-    const tItem = nearestTimeForMatch(item);
-    const cItem = nearestCourtForMatch(item);
-    const dItem = nearestDateForMatch(item);
-    const week  = nearestWeekForMatch(item);
+    if (!time)    warnings.push(`Column at x≈${Math.round(col.x)}: no time header matched`);
+    if (!dateStr) warnings.push(`Column at x≈${Math.round(col.x)}: no date detected`);
 
-    const timeStr  = tItem ? tItem.timeStr : "";
-    const court    = cItem ? cItem.text    : "";
-    const dateStr  = dItem ? dItem.dateStr : "";
-    const dayStr   = dateStr ? dayFromDate(dateStr) : "";
+    // Each item in this column maps to a court by index (0=Near, 1=Mid, 2=Far, 3=#4, 4=#5)
+    // If there are more than 5, wrap around (multiple weeks stacked)
+    col.items.forEach((item, rowIdx) => {
+      const court   = COURTS[rowIdx % COURTS.length];
+      const m       = item.text.match(MATCH_RE);
+      if (!m) return;
+      const homeId  = parseInt(m[1]);
+      const awayId  = parseInt(m[2]);
+      const homeTeam = teams.find(t => t.id === homeId);
+      const awayTeam = teams.find(t => t.id === awayId);
+      const w = [];
+      if (!homeTeam) w.push(`#${homeId} not in team list`);
+      if (!awayTeam) w.push(`#${awayId} not in team list`);
 
-    const homeTeam = teams.find(t => t.id === homeId);
-    const awayTeam = teams.find(t => t.id === awayId);
-    const w = [];
-    if (!homeTeam) w.push(`Team #${homeId} not in app`);
-    if (!awayTeam) w.push(`Team #${awayId} not in app`);
-    if (!timeStr)  w.push("Time not detected");
-    if (!court)    w.push("Court not detected");
-    if (!dateStr)  w.push("Date not detected");
-
-    results.push({
-      game:{
-        id:     Date.now() + idx,
-        day:    dayStr,
-        date:   dateStr,
-        time:   timeStr,
-        court,
-        home:   homeId,
-        away:   awayId,
-        status: "Upcoming",
-        hs:     null,
-        as_:    null,
-        _week:  week,
-      },
-      homeTeam, awayTeam, warnings: w,
-      // raw positions for debugging
-      _matchXY: {x: item.x, y: item.y},
-      _timeXY:  tItem ? {x:tItem.x, y:tItem.y} : null,
-      _courtXY: cItem ? {x:cItem.x, y:cItem.y} : null,
-      _dateXY:  dItem ? {x:dItem.x, y:dItem.y} : null,
+      results.push({
+        game:{
+          id:     Date.now() + results.length,
+          day:    dayStr,
+          date:   dateStr,
+          time:   time   || "",
+          court,
+          home:   homeId,
+          away:   awayId,
+          status: "Upcoming",
+          hs:     null,
+          as_:    null,
+          _week:  week,
+        },
+        homeTeam, awayTeam, warnings: w,
+      });
     });
   });
 
-  if (results.length === 0) {
-    warnings.push("No match cells (e.g. '51 vs 52') found in this PDF.");
-    warnings.push("Try Manual Paste Import as a fallback.");
-  }
-
-  // Build debug info: extracted categories
   const debugInfo = {
-    timeItems:  timeItems.map(i => `${i.timeStr} @ (${i.x},${i.y})`),
-    courtItems: courtItems.map(i => `${i.text} @ (${i.x},${i.y})`),
-    dateItems:  dateItems.map(i => `${i.dateStr} @ (${i.x},${i.y})`),
-    weekItems:  weekItems.map(i => `${i.text} @ (${i.x},${i.y})`),
+    timeItems:  sortedTimes.map(t => `${t.timeStr}@x${Math.round(t.x)}`),
+    courtItems: COURTS.map(c => c),
+    dateItems:  dateItems.map(d => `${d.dateStr}@(${Math.round(d.x)},${Math.round(d.y)})`),
+    weekItems:  weekItems.map(w => `${w.text}@y${Math.round(w.y)}`),
     matchCount: matchItems.length,
+    columns:    columns.map(c => `x≈${Math.round(c.x)} [${c.items.length} matches]`),
   };
 
   return {games: results, warnings, debugInfo};
 }
 
 const MATCH_RE_CHECK = (s) => /\d{2,3}\s*vs\.?\s*\d{2,3}/i.test(s);
+
 
 function AdminBulkPDF({ back, teams, games, setGames }) {
   const [status,    setStatus]    = useState("idle");
