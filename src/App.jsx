@@ -2449,6 +2449,7 @@ function parseFairplayPDF(rawItems, teams, year) {
   const debugInfo = {
     year,
     timeItems:  sortedTimes.map((t,i)=>`[${i}] ${t.timeStr} @x${Math.round(t.x)}`),
+    courtItems: COURTS,
     dateItems:  dateItems.map(d=>`${d.iso} @(${Math.round(d.x)},${Math.round(d.y)})`),
     weekItems:  weekItems.map(w=>`Week${w.weekNum} @y${Math.round(w.y)}`),
     weekBlocks: weekBlocks.map(b=>`Week${b.weekNum} y${Math.round(b.startY)}-${b.endY===Infinity?"∞":Math.round(b.endY)} → ${b.iso||"NO DATE"}`),
@@ -2621,11 +2622,11 @@ function AdminBulkPDF({ back, teams, games, setGames }) {
               {showDebug && (
                 <div style={{marginTop:8,background:C.bg,borderRadius:R2,padding:"10px 12px",border:`1px solid ${C.border}`,fontSize:10,color:C.muted,lineHeight:1.8,overflowX:"auto"}}>
                   <div style={{fontWeight:700,color:C.text,marginBottom:4}}>Times detected:</div>
-                  <div style={{marginBottom:8}}>{debugInfo.timeItems.join(" · ") || "none"}</div>
-                  <div style={{fontWeight:700,color:C.text,marginBottom:4}}>Courts detected:</div>
-                  <div style={{marginBottom:8}}>{debugInfo.courtItems.join(" · ") || "none"}</div>
+                  <div style={{marginBottom:8}}>{(debugInfo.timeItems||[]).join(" · ") || "none"}</div>
+                  <div style={{fontWeight:700,color:C.text,marginBottom:4}}>Courts (fixed order):</div>
+                  <div style={{marginBottom:8}}>{(debugInfo.courtItems||["Near","Mid","Far","#4","#5"]).join(" · ")}</div>
                   <div style={{fontWeight:700,color:C.text,marginBottom:4}}>Dates detected:</div>
-                  <div>{debugInfo.dateItems.join(" · ") || "none"}</div>
+                  <div>{(debugInfo.dateItems||[]).join(" · ") || "none"}</div>
                 </div>
               )}
             </div>
