@@ -3866,11 +3866,16 @@ function AppInner() {
 
           <div style={{flex:1,textAlign:"center"}}>
             {isHome
-              ?<img
-                  src="/images/fairplay-logo.jpg"
-                  alt="Fairplay Volleyball"
-                  style={{height:38,maxWidth:180,objectFit:"contain",objectPosition:"center",display:"block",margin:"0 auto"}}
-                />
+              ?<div style={{display:"inline-flex",alignItems:"center",gap:10}}>
+                <svg width="36" height="24" viewBox="0 0 36 24" fill="none" opacity="0.95">
+                  <circle cx="12" cy="12" r="10" stroke={C.gold} strokeWidth="2.5" fill="none"/>
+                  <circle cx="24" cy="12" r="10" stroke={C.gold} strokeWidth="2.5" fill="none"/>
+                </svg>
+                <div>
+                  <div style={{fontSize:19,fontWeight:700,color:C.text,lineHeight:1,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"3px",textTransform:"uppercase"}}>FAIRPLAY</div>
+                  <div style={{fontSize:10,fontWeight:600,color:C.gold,letterSpacing:"3.5px",textTransform:"uppercase",lineHeight:1,marginTop:2}}>VOLLEYBALL</div>
+                </div>
+              </div>
               :<div style={{fontSize:15,fontWeight:700,color:C.text,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:"1.5px",textTransform:"uppercase"}}>{PAGE_TITLE[tab]||"Fairplay"}</div>
             }
           </div>
