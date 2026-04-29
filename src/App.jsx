@@ -3867,7 +3867,7 @@ function AppInner() {
           <div style={{flex:1,textAlign:"center"}}>
             {isHome
               ?<img
-                  src="/fairplay-logo.jpg"
+                  src="/images/fairplay-logo.jpg"
                   alt="Fairplay Volleyball"
                   style={{height:38,maxWidth:180,objectFit:"contain",objectPosition:"center",display:"block",margin:"0 auto"}}
                 />
