@@ -130,6 +130,22 @@ const bName = (teams, val) => {
   return val || "TBD";
 };
 
+// Parse ISO "YYYY-MM-DD" as a LOCAL calendar date, not UTC.
+// new Date("2026-04-29") shifts timezone → wrong weekday in many regions.
+// new Date(2026, 3, 29) stays local → correct.
+function parseLocalDate(iso) {
+  if (!iso || typeof iso !== "string") return null;
+  const parts = iso.split("-").map(Number);
+  if (parts.length !== 3 || parts.some(isNaN)) return null;
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
+
+// Get short weekday from an ISO string using local date
+function dayFromISO(iso) {
+  const d = parseLocalDate(iso);
+  return d ? d.toLocaleDateString("en-US", {weekday:"short"}) : "";
+}
+
 function calcStandings(games, teams) {
   const s = {};
   teams.forEach(t => { s[t.id] = {w:0,l:0,pf:0,pa:0}; });
@@ -335,17 +351,24 @@ function DatePick({ label, value, onChange }) {
   const toISO = (str) => {
     if (!str) return "";
     if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+    // Parse display string like "Wed, May 7" back to ISO using local date
     try {
-      const d = new Date(str + " 2025");
-      if (isNaN(d)) return "";
-      return d.toISOString().slice(0,10);
+      const monthMap = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+      const m = str.match(/((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?)\s+(\d{1,2})/i);
+      if (!m) return "";
+      const key = m[1].toLowerCase().replace(/\.$/,"").slice(0,3);
+      const month = monthMap[key];
+      if (!month) return "";
+      const yr = new Date().getFullYear();
+      return `${yr}-${String(month).padStart(2,"0")}-${String(parseInt(m[2])).padStart(2,"0")}`;
     } catch(e) { return ""; }
   };
   // Convert YYYY-MM-DD to display "Wed, May 7"
   const toDisplay = (iso) => {
     if (!iso) return "";
     try {
-      const d = new Date(iso + "T12:00:00");
+      const d = parseLocalDate(iso);
+      if (!d || isNaN(d)) return iso;
       return d.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"});
     } catch(e) { return iso; }
   };
@@ -496,7 +519,7 @@ function GameCard({game,teams,compact=false,refMode=false,editId,setEditId,updat
           <div style={{background:C.bg,borderRadius:8,padding:"10px 12px",marginBottom:10}}>
             <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",marginBottom:10}}>Details</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-              <DatePick label="Date" value={date} onChange={v=>{ setDate(v); const d=new Date(v+" 2025"); if(!isNaN(d)) setDay(d.toLocaleDateString("en-US",{weekday:"short"})); }}/>
+              <DatePick label="Date" value={date} onChange={v=>{ setDate(v); const d=parseLocalDate(v); if(d&&!isNaN(d)) setDay(d.toLocaleDateString("en-US",{weekday:"short"})); }}/>
               <TimePick label="Time" value={time} onChange={setTime}/>
               <TF label="Court" value={court} onChange={setCourt}/>
             </div>
@@ -2026,7 +2049,7 @@ function AdminSchedule({ back, games, setGames, teams }) {
       <div style={{paddingBottom:28}}>
         <button onClick={()=>setSelId(null)} style={{background:"none",border:"none",color:C.gold,fontSize:13,fontWeight:600,cursor:"pointer",padding:"0 0 16px",display:"block"}}>← Back</button>
         <div style={{fontSize:13,fontWeight:600,color:C.text,marginBottom:16}}>{home?.name} vs {away?.name}</div>
-        <DatePick label="Date" value={date} onChange={v=>{ setDate(v); const d=new Date(v+" 2025"); if(!isNaN(d)) setDay(d.toLocaleDateString("en-US",{weekday:"short"})); }}/>
+        <DatePick label="Date" value={date} onChange={v=>{ setDate(v); const d=parseLocalDate(v); if(d&&!isNaN(d)) setDay(d.toLocaleDateString("en-US",{weekday:"short"})); }}/>
         <TimePick label="Time" value={time} onChange={setTime}/>
         <TF label="Court" value={court} onChange={setCourt} placeholder="River City — Court 1"/>
         <div style={{marginBottom:14}}>
@@ -2294,13 +2317,8 @@ function parseFairplayPDF(rawItems, teams, year) {
     return `${year}-${String(month).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
   };
 
-  const dayFromISO = (iso) => {
-    if (!iso) return "";
-    try {
-      const d = new Date(iso + "T12:00:00");
-      return isNaN(d) ? "" : d.toLocaleDateString("en-US", {weekday:"short"});
-    } catch(e) { return ""; }
-  };
+  // dayFromISO is defined globally — uses parseLocalDate (no UTC shift)
+
 
   const items = rawItems.filter(i => i.text.length > 0);
 
@@ -2520,8 +2538,8 @@ function AdminBulkPDF({ back, teams, games, setGames }) {
         let dayStr = r.game.day;
         if (isoDate && /^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
           try {
-            const d = new Date(isoDate + "T12:00:00");
-            if (!isNaN(d)) {
+            const d = parseLocalDate(isoDate);
+            if (d && !isNaN(d)) {
               displayDate = d.toLocaleDateString("en-US",{month:"short",day:"numeric"});
               dayStr = d.toLocaleDateString("en-US",{weekday:"short"});
             }
@@ -2738,10 +2756,17 @@ function AdminBulkImport({ back, teams, games, setGames }) {
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   const DAY_FROM_DATE = (dateStr) => {
+    // Convert "May 6" to ISO then use parseLocalDate to avoid UTC shift
     try {
-      const d = new Date(dateStr + ", 2025");
-      if (isNaN(d)) return null;
-      return d.toLocaleDateString("en-US",{weekday:"short"}); // "Mon"
+      const monthMap = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+      const m = dateStr.match(/((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?)\s+(\d{1,2})/i);
+      if (!m) return null;
+      const key = m[1].toLowerCase().replace(/\.$/,"").slice(0,3);
+      const month = monthMap[key];
+      if (!month) return null;
+      const yr = new Date().getFullYear();
+      const d = new Date(yr, month - 1, parseInt(m[2]));
+      return isNaN(d) ? null : d.toLocaleDateString("en-US",{weekday:"short"});
     } catch(e) { return null; }
   };
 
